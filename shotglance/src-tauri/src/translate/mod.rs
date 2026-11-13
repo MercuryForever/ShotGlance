@@ -89,6 +89,13 @@ pub struct Cfg {
 
     /// 离线引擎单句最大 token 数。太长会拖慢自回归解码
     pub offline_max_tokens: usize,
+
+    /// 框选识别完成后是否自动翻译并悬浮显示译文。
+    ///
+    /// 默认开：悬浮回显是这个工具的主线体验，"松手即出译文"才是完整形态。
+    /// 关掉就回到"手动点翻译"的老流程——按量计费的引擎（DeepL / OpenAI）
+    /// 会真的产生费用，所以必须让用户能关。
+    pub auto_translate: bool,
 }
 
 impl Default for Cfg {
@@ -104,6 +111,7 @@ impl Default for Cfg {
             openai_key: String::new(),
             openai_model: "gpt-4o-mini".into(),
             offline_max_tokens: 96,
+            auto_translate: true,
         }
     }
 }

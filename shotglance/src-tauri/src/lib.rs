@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 use serde::Serialize;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -48,6 +48,38 @@ static PENDING: Mutex<Option<PendingRegion>> = Mutex::new(None);
 /// 面板被临时拉成全屏无边框，退出时必须回到用户原来摆放的位置和尺寸——
 /// 回不到原位的话，每用一次框选窗口就跳一次，非常烦人。
 static PANEL_GEOM: Mutex<Option<PanelGeom>> = Mutex::new(None);
+
+/// 进入译文悬浮形态前的窗口几何。
+///
+/// 与 `PANEL_GEOM` 分开存，不共用：两个形态的进出可以交错（框选 → 悬浮 →
+/// 热键唤回面板），共用一个槽位时后进的那个人会把前一个人的原始几何覆盖掉，
+/// 结果就是还原不回用户摆的位置。
+static OVERLAY_GEOM: Mutex<Option<PanelGeom>> = Mutex::new(None);
+
+/// 悬浮卡片当前锚定的原文框（屏幕物理像素）。
+///
+/// 卡片高度是内容决定的：前端量完真实高度会回头调 `overlay_fit`，
+/// 那时必须拿得到锚点才能重新算"放框下面还是框上面"，所以得存下来。
+static OVERLAY_ANCHOR: Mutex<Option<OverlayAnchor>> = Mutex::new(None);
+
+/// 屏幕上的一个矩形（物理像素，绝对坐标）。
+#[derive(Clone, Copy)]
+struct AnchorRect {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+
+/// 悬浮卡片的锚定信息：框在哪、属于哪块屏。
+///
+/// 存显示器序号而不是它的几何：多屏布局随时可能改（插拔、改分辨率），
+/// 存几何就等于存了一份会过期的快照。
+#[derive(Clone, Copy)]
+struct OverlayAnchor {
+    rect: AnchorRect,
+    monitor: usize,
+}
 
 struct PendingRegion {
     frame: image::RgbaImage,
@@ -108,6 +140,21 @@ fn idle_timeout_secs() -> u64 {
         .unwrap_or(IDLE_TIMEOUT_SECS)
 }
 
+/// 回收判定用的阈值。
+///
+/// 悬浮卡片显示期间放宽到 3 倍：用户正盯着那一句译文看，读两分钟很正常，
+/// 按 120 秒回收会让他"看到一半东西没了"。但仍然要回收——一块置顶、
+/// 无边框、不占任务栏的卡片永远赖在屏幕上，比"晚一点回收"更烦人。
+/// 用倍数而不是新加一个常量，是为了让 SHOTGLANCE_IDLE_SECS 的测试覆盖继续有效。
+fn idle_limit_secs() -> u64 {
+    let base = idle_timeout_secs();
+    if is_overlay() {
+        base.saturating_mul(3)
+    } else {
+        base
+    }
+}
+
 /// 全局热键：Ctrl+Shift+S。
 fn hotkey() -> Shortcut {
     Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyS)
@@ -119,6 +166,13 @@ fn hotkey() -> Shortcut {
 /// （约 5 ms），而不是重建 WebView2（约 300–500 ms）。
 fn open_panel(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     if let Some(w) = app.get_webview_window(PANEL) {
+        // 悬浮形态下用户又按了热键：先退回面板形态。
+        // 不退的话"显示面板"这个动作看起来只是把一张小卡片挪到眼前，
+        // 而用户要的是完整面板（看原文、改引擎、复制）。
+        if is_overlay() {
+            exit_overlay_mode(app);
+            let _ = app.emit("overlay-dismiss", ());
+        }
         let _ = w.unminimize();
         w.show()?;
         w.set_focus()?;
@@ -127,8 +181,10 @@ fn open_panel(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     }
 
     // SHOTGLANCE_AUTO_OCR=1 时前端加载完就跑一次识别，用于自动化取界面证据
-    // （无法模拟点击时的替代方案）。
-    let url = if std::env::var_os("SHOTGLANCE_AUTO_OCR").is_some() {
+    // （无法模拟点击时的替代方案）。AUTO_OVERLAY 同理，只是摆悬浮卡片。
+    let url = if std::env::var_os("SHOTGLANCE_AUTO_OVERLAY").is_some() {
+        WebviewUrl::App("index.html?auto=overlay".into())
+    } else if std::env::var_os("SHOTGLANCE_AUTO_OCR").is_some() {
         WebviewUrl::App("index.html?auto=ocr".into())
     } else {
         WebviewUrl::App("index.html".into())
@@ -167,6 +223,8 @@ fn destroy_panel(app: &AppHandle) {
     // 选区状态跟着窗口一起作废：留着的话下一轮打开面板会看到一个
     // 早已过期的裁剪结果。
     clear_pending();
+    // 悬浮状态同理：窗口都没了，锚点和"原始几何"都成了悬空引用。
+    clear_overlay_state();
     PANEL_GEOM
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -284,6 +342,167 @@ fn exit_selection_mode(app: &AppHandle) {
     let _ = win.set_focus();
 }
 
+/// 某块显示器的物理边界：左、上、右、下。
+///
+/// 拿不到就返回一个极大的范围：定位逻辑会因此退化成"只按原文框对齐"，
+/// 不会因为枚举失败而把卡片摆到屏幕外。
+fn monitor_bounds(app: &AppHandle, idx: usize) -> (i32, i32, i32, i32) {
+    // 只取几何值不持有 Monitor，理由同 enter_selection_mode。
+    if let Ok(list) = app.available_monitors() {
+        if !list.is_empty() {
+            let m = &list[idx.min(list.len() - 1)];
+            let p = *m.position();
+            let s = *m.size();
+            return (p.x, p.y, p.x + s.width as i32, p.y + s.height as i32);
+        }
+    }
+    if let Ok(Some(m)) = app.primary_monitor() {
+        let p = *m.position();
+        let s = *m.size();
+        return (p.x, p.y, p.x + s.width as i32, p.y + s.height as i32);
+    }
+    (-100_000, -100_000, 100_000, 100_000)
+}
+
+/// 算出悬浮卡片该摆在哪儿。
+///
+/// 规则只有三条，但顺序不能换：
+/// 1. 默认放原文框**下方**——读原文的视线自然往下走，也不会盖住刚框的那几行。
+/// 2. 下方放不下就翻到上方；上方也放不下（框几乎占满一屏）就贴底。
+///    此时必然遮住一部分原文，但整张卡片可见，比被裁掉一半有用。
+/// 3. 左右夹进显示器内。夹的顺序是"先右后左"：右边界更硬（超出就是屏幕外），
+///    左边界夹回来最多和框左对齐。
+fn overlay_place(
+    rect: AnchorRect,
+    w: u32,
+    h: u32,
+    bounds: (i32, i32, i32, i32),
+    scale: f64,
+) -> (i32, i32) {
+    let (left, top, right, bottom) = bounds;
+    let gap = (8.0 * scale).round() as i32;
+    let (wi, hi) = (w as i32, h as i32);
+
+    let mut y = rect.y + rect.h + gap;
+    if y + hi > bottom - gap {
+        y = rect.y - hi - gap;
+        if y < top + gap {
+            y = bottom - hi - gap;
+        }
+    }
+    if y < top + gap {
+        y = top + gap;
+    }
+
+    let mut x = rect.x;
+    if x + wi > right - gap {
+        x = right - wi - gap;
+    }
+    if x < left + gap {
+        x = left + gap;
+    }
+    (x, y)
+}
+
+fn is_overlay() -> bool {
+    OVERLAY_ANCHOR
+        .lock()
+        .map(|slot| slot.is_some())
+        .unwrap_or(false)
+}
+
+fn clear_overlay_state() {
+    OVERLAY_ANCHOR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    OVERLAY_GEOM
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+}
+
+/// 把面板窗口变形为译文悬浮卡片：无边框、置顶、不占任务栏，贴在原文框旁边。
+///
+/// 仍然复用同一个窗口，不新开一个——理由与选区模式完全一致：多一个
+/// WebView2 窗口就多 5–6 个子进程（约 290 MB），而悬浮卡片只是一块文字。
+/// 顺带的好处是它天然共享面板的翻译配置与已加载的离线模型。
+fn enter_overlay_mode(app: &AppHandle, anchor: OverlayAnchor, w: u32, h: u32) {
+    let Some(win) = app.get_webview_window(PANEL) else {
+        return;
+    };
+
+    // 只在第一次进入时记录几何。后续每次 fit 都会改尺寸，
+    // 若每次都记，退出时"原始几何"就变成了上一次的小卡片尺寸，面板再也回不去。
+    {
+        let mut slot = OVERLAY_GEOM
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if slot.is_none() {
+            if let (Ok(pos), Ok(size)) = (win.outer_position(), win.inner_size()) {
+                *slot = Some(PanelGeom { x: pos.x, y: pos.y, w: size.width, h: size.height });
+            }
+        }
+    }
+
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let bounds = monitor_bounds(app, anchor.monitor);
+    let (x, y) = overlay_place(anchor.rect, w, h, bounds, scale);
+
+    // 和选区面一样，几何只留一行日志：卡片"到底贴在哪儿、多大"全都来自
+    // 运行时的显示器几何与 DPI，读代码推不出来，出问题时它是唯一取证线索。
+    eprintln!(
+        "[shotglance] 悬浮卡片 {}x{}+{},{} (原文框 {},{} {}x{}, scale {scale})",
+        w, h, x, y, anchor.rect.x, anchor.rect.y, anchor.rect.w, anchor.rect.h
+    );
+
+    // 顺序同选区模式：先摘标题栏再设尺寸，否则客户区会差一圈，
+    // 卡片和原文框就对不齐了。
+    let _ = win.set_decorations(false);
+    let _ = win.set_always_on_top(true);
+    // 悬浮卡片是临时浮层，不该在任务栏占一个条目——
+    // 否则 Alt+Tab 里会多出一个"看起来是主面板"的窗口，语义就乱了。
+    let _ = win.set_skip_taskbar(true);
+
+    let _ = win.set_size(tauri::PhysicalSize::new(w, h));
+    let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+
+    *OVERLAY_ANCHOR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(anchor);
+
+    // 保留焦点：Esc 要能立刻收起卡片。代价是抢走用户原窗口的焦点，
+    // 但"能看到译文就说明他此刻在读这一句"，抢焦点可接受。
+    let _ = win.set_focus();
+    touch();
+}
+
+/// 退出悬浮形态，还原成常规面板窗口。
+fn exit_overlay_mode(app: &AppHandle) {
+    let geom = OVERLAY_GEOM
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    OVERLAY_ANCHOR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+
+    let Some(win) = app.get_webview_window(PANEL) else {
+        return;
+    };
+
+    let _ = win.set_skip_taskbar(false);
+    let _ = win.set_always_on_top(std::env::var_os("SHOTGLANCE_TOPMOST").is_some());
+    // 同 exit_selection_mode：先把标题栏装回去，再按客户区尺寸还原。
+    let _ = win.set_decorations(true);
+    if let Some(g) = geom {
+        let _ = win.set_size(tauri::PhysicalSize::new(g.w, g.h));
+        let _ = win.set_position(tauri::PhysicalPosition::new(g.x, g.y));
+    }
+    let _ = win.set_focus();
+}
+
 fn toggle_panel(app: &AppHandle) {
     if app.get_webview_window(PANEL).is_some() {
         destroy_panel(app);
@@ -303,7 +522,7 @@ fn spawn_idle_watchdog(app: AppHandle) {
         // 会让选区面消失但 PENDING 帧还在，状态就乱了。
         if app.get_webview_window(PANEL).is_some()
             && !is_selecting()
-            && idle_ms() > idle_timeout_secs() * 1000
+            && idle_ms() > idle_limit_secs() * 1000
         {
             destroy_panel(&app);
         }
@@ -402,6 +621,12 @@ struct RegionResult {
     crop_ms: u64,
     encode_ms: u64,
     jpeg_b64: String,
+    /// 选区在**屏幕坐标系**里的原点（物理像素）。
+    ///
+    /// 悬浮卡片靠它贴到原文框旁边。裁剪坐标是相对整屏帧的，少了显示器原点
+    /// 卡片会一直贴在主屏左上角——多屏时这个偏差能差出一整块屏幕。
+    screen_x: i32,
+    screen_y: i32,
     /// run_ocr=false 时为 null（只要截图不要识别）。
     ocr: Option<ocr::OcrResult>,
 }
@@ -460,6 +685,10 @@ async fn region_finish(
 
     let want_ocr = run_ocr.unwrap_or(true);
 
+    // 显示器原点必须在 spawn_blocking 之前取：`pending` 后面要 move 进闭包，
+    // 而 available_monitors 需要 &AppHandle（闭包里没有）。
+    let bounds = monitor_bounds(&app, pending.monitor);
+
     tauri::async_runtime::spawn_blocking(move || {
         use std::time::Instant;
 
@@ -488,6 +717,8 @@ async fn region_finish(
             crop_ms,
             encode_ms,
             jpeg_b64,
+            screen_x: bounds.0 + cropped.x as i32,
+            screen_y: bounds.1 + cropped.y as i32,
             ocr,
         })
     })
@@ -503,6 +734,92 @@ async fn region_finish(
 fn region_cancel(app: AppHandle) {
     exit_selection_mode(&app);
     clear_pending();
+}
+
+/// 显示译文悬浮卡片，贴在原文框旁边。
+///
+/// 参数是原文框在**屏幕坐标系**里的物理像素矩形（`RegionResult` 的
+/// `screen_x/screen_y` 加宽高）。卡片宽度由后端算而不是前端传：
+/// 它要和原文框视觉上成一体，换算涉及 DPI，放一处比放两处安全。
+#[tauri::command]
+fn overlay_show(
+    app: AppHandle,
+    screen_x: i32,
+    screen_y: i32,
+    width: u32,
+    height: u32,
+    monitor: usize,
+) -> Result<(), String> {
+    let Some(win) = app.get_webview_window(PANEL) else {
+        return Err("面板窗口不存在".into());
+    };
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let gap = 8.0 * scale;
+    // 宽度跟着原文框走，但夹在 300–620 CSS px：太窄读不成句，太宽会把整屏盖住。
+    let w = ((width as f64) + gap * 2.0)
+        .clamp(300.0 * scale, 620.0 * scale)
+        .round() as u32;
+    // 初始高度只给个占位值。前端量到真实内容高度后会立刻走 overlay_fit 精确调整，
+    // 这里先给一个"看起来像卡片"的高度，避免从 460 高的面板缩下来时闪一大块白。
+    let h = (96.0 * scale).round() as u32;
+
+    enter_overlay_mode(
+        &app,
+        OverlayAnchor {
+            rect: AnchorRect { x: screen_x, y: screen_y, w: width as i32, h: height as i32 },
+            monitor,
+        },
+        w,
+        h,
+    );
+    Ok(())
+}
+
+/// 按内容高度调整卡片，并重算位置。
+///
+/// 高度变了，"放框下面还是框上面"可能也跟着变（原本够、现在不够），
+/// 所以定位必须重算而不是只改尺寸。
+#[tauri::command]
+fn overlay_fit(app: AppHandle, h_logical: f64) -> Result<(), String> {
+    let Some(win) = app.get_webview_window(PANEL) else {
+        return Err("面板窗口不存在".into());
+    };
+    let Some(anchor) = OVERLAY_ANCHOR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .copied()
+    else {
+        return Err("当前不在悬浮形态".into());
+    };
+
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let w = win.inner_size().map_err(|e| e.to_string())?.width;
+    let bounds = monitor_bounds(&app, anchor.monitor);
+    // 高度上限取屏幕可用高度的 70%：再高就谈不上"不遮挡上下文"了，
+    // 超出的部分交给卡片内部滚动。
+    let max_h = ((bounds.3 - bounds.1) as f64 * 0.7).max(160.0 * scale);
+    let h = (h_logical * scale).clamp(48.0 * scale, max_h).round() as u32;
+
+    // 高度没变就别动。每帧都 set_size 会让 Windows 反复重排，观感是一闪一闪的。
+    let cur = win.inner_size().map(|s| s.height).unwrap_or(0);
+    if cur == h {
+        return Ok(());
+    }
+
+    let (x, y) = overlay_place(anchor.rect, w, h, bounds, scale);
+    eprintln!("[shotglance] 悬浮卡片高度 {cur} -> {h}（内容 {h_logical} css px）");
+    let _ = win.set_size(tauri::PhysicalSize::new(w, h));
+    let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    touch();
+    Ok(())
+}
+
+/// 收起悬浮卡片，退回面板形态（译文仍留在面板里，可以直接复制）。
+#[tauri::command]
+fn overlay_close(app: AppHandle) {
+    exit_overlay_mode(&app);
+    touch();
 }
 
 /// OCR 依赖是否就位（模型 + onnxruntime.dll）。
@@ -932,6 +1249,9 @@ pub fn run() {
             region_begin,
             region_finish,
             region_cancel,
+            overlay_show,
+            overlay_fit,
+            overlay_close,
             ocr_ready,
             translate,
             translate_engines,
@@ -958,4 +1278,82 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 一块 1920×1080、原点在 (0,0) 的屏幕。缩放固定为 1，便于直接读数值。
+    const SCREEN: (i32, i32, i32, i32) = (0, 0, 1920, 1080);
+
+    /// 常规情况：框在屏幕中间，卡片落在框下方 8px。
+    #[test]
+    fn overlay_below_when_room() {
+        let (x, y) = overlay_place(
+            AnchorRect { x: 400, y: 300, w: 500, h: 74 },
+            480,
+            120,
+            SCREEN,
+            1.0,
+        );
+        assert_eq!(x, 400, "左边缘应与原文框对齐");
+        assert_eq!(y, 382, "应落在框下方 8px");
+    }
+
+    /// 框贴着屏幕底边：下方放不下，必须翻到框上方。
+    ///
+    /// 这条是真实场景里最常触发的分支——用户在对话框底部框一行字。
+    #[test]
+    fn overlay_flips_above_near_bottom() {
+        let (_, y) = overlay_place(
+            AnchorRect { x: 400, y: 980, w: 500, h: 60 },
+            480,
+            120,
+            SCREEN,
+            1.0,
+        );
+        assert_eq!(y, 852, "应翻到框上方（980 - 120 - 8）");
+    }
+
+    /// 框贴着右边：卡片要往回夹，不能越出屏幕。
+    #[test]
+    fn overlay_clamps_right_edge() {
+        let (x, _) = overlay_place(
+            AnchorRect { x: 1700, y: 300, w: 200, h: 40 },
+            480,
+            120,
+            SCREEN,
+            1.0,
+        );
+        assert_eq!(x, 1432, "右边距应保持 8px（1920 - 480 - 8）");
+    }
+
+    /// 卡片比屏幕还高（上下都放不下）：贴底，保证整张卡片可见。
+    #[test]
+    fn overlay_pins_bottom_when_taller_than_screen() {
+        let (_, y) = overlay_place(
+            AnchorRect { x: 0, y: 20, w: 100, h: 1000 },
+            480,
+            900,
+            SCREEN,
+            1.0,
+        );
+        assert_eq!(y, 172, "应贴底（1080 - 900 - 8），而不是被顶到屏幕外");
+    }
+
+    /// 多屏且副屏在主屏左侧（负坐标）：左边界夹取必须按该屏自己的原点算，
+    /// 不能当成"坐标小于 0 就是越界"推到 0 去。
+    #[test]
+    fn overlay_clamps_on_negative_origin_monitor() {
+        let left_screen = (-1920, 0, 0, 1080);
+        let (x, _) = overlay_place(
+            AnchorRect { x: -1919, y: 300, w: 40, h: 40 },
+            480,
+            120,
+            left_screen,
+            1.0,
+        );
+        assert_eq!(x, -1912, "应夹在该屏左侧内 8px（-1920 + 8）");
+    }
 }

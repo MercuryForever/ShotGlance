@@ -68,6 +68,9 @@ interface RegionResult {
   crop_ms: number;
   encode_ms: number;
   jpeg_b64: string;
+  /** 选区在屏幕坐标系里的原点（物理像素）。悬浮卡片靠它贴到原文框旁边。 */
+  screen_x: number;
+  screen_y: number;
   ocr: OcrResult | null;
 }
 
@@ -93,6 +96,8 @@ interface MtCfg {
   openai_key: string;
   openai_model: string;
   offline_max_tokens: number;
+  /** 框选识别完成后自动翻译并悬浮显示。关掉就回到手动点「翻译」。 */
+  auto_translate: boolean;
 }
 
 interface Outcome {
@@ -166,6 +171,15 @@ const cfgDlFill = $<HTMLElement>("#cfg-dl-fill");
 const cfgTestBtn = $<HTMLButtonElement>("#cfg-test");
 const cfgSaveBtn = $<HTMLButtonElement>("#cfg-save");
 const cfgOut = $<HTMLElement>("#cfg-out");
+
+/* 悬浮卡片。它的 DOM 和面板共用同一个窗口，只是形态不同。 */
+const ovEl = $<HTMLElement>("#ov");
+const ovHeadEl = $<HTMLElement>("#ov-head");
+const ovMetaEl = $<HTMLElement>("#ov-meta");
+const ovTextEl = $<HTMLElement>("#ov-text");
+const ovBackBtn = $<HTMLButtonElement>("#ov-back");
+const ovCopyBtn = $<HTMLButtonElement>("#ov-copy");
+const cfgAutoTrans = $<HTMLInputElement>("#cfg-auto-trans");
 
 let lastText = "";
 
@@ -372,6 +386,7 @@ function applyCfg(cfg: MtCfg): void {
   if (cfgKey) cfgKey.value = cfg.openai_key;
   if (cfgModel) cfgModel.value = cfg.openai_model;
   if (cfgMmEmail) cfgMmEmail.value = cfg.mymemory_email;
+  if (cfgAutoTrans) cfgAutoTrans.checked = cfg.auto_translate;
   showEnginePane(cfg.engine);
 }
 
@@ -388,6 +403,7 @@ function readCfg(): MtCfg {
     openai_key: "",
     openai_model: "gpt-4o-mini",
     offline_max_tokens: 96,
+    auto_translate: true,
   };
   return {
     ...base,
@@ -400,6 +416,7 @@ function readCfg(): MtCfg {
     openai_key: cfgKey?.value.trim() ?? base.openai_key,
     openai_model: cfgModel?.value.trim() ?? base.openai_model,
     mymemory_email: cfgMmEmail?.value.trim() ?? base.mymemory_email,
+    auto_translate: cfgAutoTrans?.checked ?? base.auto_translate,
   };
 }
 
@@ -473,6 +490,42 @@ async function testEngine(): Promise<void> {
   }
 }
 
+/** 一次翻译结果的副标题（引擎 · 耗时 · 是否缓存 · 从谁降级而来）。 */
+function outcomeMeta(r: Outcome): string {
+  const parts = [r.engine_label, `${r.ms} ms`];
+  if (r.cached) parts.push("缓存");
+  if (r.fell_back_from) parts.push(`降级自 ${r.fell_back_from}`);
+  return parts.join(" · ");
+}
+
+/** 把翻译结果落到面板的译文区。
+ *
+ * 自动翻译（框选后）走的也是这条路径：用户按「返回」收起悬浮卡片时，
+ * 面板里必须已经有译文，否则"关掉悬浮"就等于把刚翻出来的东西丢了。 */
+function renderOutcome(r: Outcome): void {
+  if (transEl) {
+    transEl.classList.toggle("placeholder", !r.text);
+    transEl.textContent = r.text || "（无译文）";
+  }
+  if (transMetaEl) {
+    transMetaEl.textContent = outcomeMeta(r);
+    // 降级原因藏在 tooltip 里：平时不占地方，出问题时能查
+    transMetaEl.title = r.note ?? "";
+  }
+}
+
+function renderTransError(err: unknown): void {
+  const msg = String(err);
+  if (transEl) {
+    transEl.classList.remove("placeholder");
+    transEl.textContent = msg;
+  }
+  if (transMetaEl) {
+    transMetaEl.textContent = "翻译失败";
+    transMetaEl.title = msg;
+  }
+}
+
 async function translate(): Promise<void> {
   if (!transEl || !transMetaEl) return;
   if (!lastText.trim()) {
@@ -487,20 +540,144 @@ async function translate(): Promise<void> {
 
   try {
     const r = await invoke<Outcome>("translate", { text: lastText });
-    transEl.classList.toggle("placeholder", !r.text);
-    transEl.textContent = r.text || "（无译文）";
-
-    const parts = [r.engine_label, `${r.ms} ms`];
-    if (r.cached) parts.push("缓存");
-    if (r.fell_back_from) parts.push(`降级自 ${r.fell_back_from}`);
-    transMetaEl.textContent = parts.join(" · ");
-    // 降级原因藏在 tooltip 里：平时不占地方，出问题时能查
-    if (r.note) transMetaEl.title = r.note;
+    renderOutcome(r);
   } catch (err) {
-    transEl.classList.remove("placeholder");
-    transEl.textContent = String(err);
-    transMetaEl.textContent = "翻译失败";
-    transMetaEl.title = String(err);
+    renderTransError(err);
+  } finally {
+    if (runBtn) runBtn.disabled = false;
+  }
+}
+
+/* ---------------- 译文悬浮卡片 ---------------- */
+
+/** 是否正处在悬浮形态（窗口已被后端缩成小卡片）。 */
+let overlayOn = false;
+
+/** 最近一次选区在屏幕上的矩形（物理像素）。悬浮卡片就贴着它摆。 */
+let lastRect: { sx: number; sy: number; w: number; h: number; monitor: number } | null = null;
+
+/** 卡片内容需要的真实高度（CSS 像素）。
+ *
+ * 不能直接用卡片的 scrollHeight：卡片带 overflow:hidden 且高度撑满窗口，
+ * 它的 scrollHeight 永远等于窗口高度，量出来会是个死循环。
+ * 所以改量滚动容器 `.ov-text` 的 scrollHeight（它装的是未被压缩的内容高度），
+ * 再加上头部与内边距。 */
+function overlayContentHeight(): number {
+  if (!ovEl || !ovHeadEl || !ovTextEl) return 96;
+  const cs = getComputedStyle(ovEl);
+  const padV = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+  const hs = getComputedStyle(ovHeadEl);
+  const headBox =
+    ovHeadEl.offsetHeight + parseFloat(hs.marginTop) + parseFloat(hs.marginBottom);
+  return Math.ceil(padV + headBox + ovTextEl.scrollHeight);
+}
+
+/** 让后端按内容高度调整卡片并重算位置。
+ *
+ * 换算成物理像素的活交给后端：它拿得到窗口的 scale_factor，
+ * 前端自己乘 devicePixelRatio 会和它出现二义性（两者在多屏不同缩放下会分叉）。 */
+function fitOverlay(): void {
+  if (!overlayOn) return;
+  const h = overlayContentHeight();
+  void invoke("overlay_fit", { hLogical: h }).catch(() => {
+    /* 已经退出悬浮形态了，忽略 */
+  });
+}
+
+/** 进入悬浮形态并准备显示译文。锚点不存在时什么都不做。 */
+async function showOverlay(): Promise<void> {
+  if (!lastRect || !ovEl) return;
+
+  // 先切 UI 再改窗口：反过来的话，窗口缩成卡片的那一帧里还挂着整个面板，
+  // 会看到面板被压扁的一闪。
+  overlayOn = true;
+  document.body.classList.add("overlay-mode");
+  ovEl.hidden = false;
+  if (ovTextEl) {
+    ovTextEl.textContent = "";
+    ovTextEl.classList.remove("err");
+  }
+  if (ovMetaEl) ovMetaEl.textContent = "";
+
+  try {
+    await invoke("overlay_show", {
+      screenX: lastRect.sx,
+      screenY: lastRect.sy,
+      width: lastRect.w,
+      height: lastRect.h,
+      monitor: lastRect.monitor,
+    });
+  } catch (err) {
+    // 进不去悬浮不算致命：译文照样会落在面板里
+    leaveOverlayUI();
+    if (transMetaEl) transMetaEl.textContent = `悬浮显示失败：${String(err)}`;
+    return;
+  }
+  requestAnimationFrame(fitOverlay);
+}
+
+/** 只切回面板的 UI，不动窗口（窗口由后端负责）。 */
+function leaveOverlayUI(): void {
+  overlayOn = false;
+  document.body.classList.remove("overlay-mode");
+  if (ovEl) ovEl.hidden = true;
+}
+
+/** 收起悬浮卡片，退回面板形态。译文仍留在面板里可以直接复制。 */
+async function closeOverlay(): Promise<void> {
+  if (!overlayOn) return;
+  try {
+    // 等后端把窗口还原成面板尺寸，再让面板内容显形——
+    // 顺序反过来会看到一帧被拉扁的面板（和取消选区同一个道理）。
+    await invoke("overlay_close");
+  } catch {
+    /* 窗口可能已销毁 */
+  }
+  leaveOverlayUI();
+}
+
+function setOverlayText(text: string, meta: string, isErr = false): void {
+  if (ovTextEl) {
+    ovTextEl.textContent = text;
+    ovTextEl.classList.toggle("err", isErr);
+  }
+  if (ovMetaEl) ovMetaEl.textContent = meta;
+  requestAnimationFrame(fitOverlay);
+}
+
+/** 框选识别完成后：按配置自动翻译，并把译文悬浮到原文框旁边。
+ *
+ * 顺序是"先出卡片再翻译"而不是"翻完再出卡片"：翻译 online 引擎要
+ * 600–1200 ms，先把卡片摆到位置并显示"翻译中…"，用户至少知道
+ * 东西出现在哪里，感知上比原地干等快得多。 */
+async function autoTranslateAndOverlay(r: RegionResult): Promise<void> {
+  const text = (r.ocr?.text ?? "").trim();
+  if (!text) return;
+
+  // 无论这次翻不翻，锚点都记下来：用户随后手点「翻译」时还能再用
+  lastRect = {
+    sx: r.screen_x,
+    sy: r.screen_y,
+    w: r.width,
+    h: r.height,
+    monitor: r.monitor,
+  };
+
+  if (!(mtCfg?.auto_translate ?? true)) return;
+
+  await showOverlay();
+  if (!overlayOn) return; // 悬浮没起来（窗口不在了），别继续做无用功
+  setOverlayText("翻译中…", "");
+
+  if (runBtn) runBtn.disabled = true;
+  if (transMetaEl) transMetaEl.textContent = "翻译中…";
+  try {
+    const o = await invoke<Outcome>("translate", { text });
+    renderOutcome(o);
+    setOverlayText(o.text || "（无译文）", outcomeMeta(o));
+  } catch (err) {
+    renderTransError(err);
+    setOverlayText(String(err).split("\n")[0], "翻译失败", true);
   } finally {
     if (runBtn) runBtn.disabled = false;
   }
@@ -713,6 +890,14 @@ async function finishRegion(crop: {
     });
     document.body.classList.remove("selecting");
     applyRegionResult(r);
+
+    // 先放开按钮与 Esc：后面自动翻译要几百毫秒到一秒多，
+    // 这期间若还按"选区进行中"算，用户按 Esc 会被吞掉，观感像卡住。
+    regionBusy = false;
+    if (regionBtn) regionBtn.disabled = false;
+    if (captureBtn) captureBtn.disabled = false;
+
+    await autoTranslateAndOverlay(r);
   } catch (err) {
     document.body.classList.remove("selecting");
     try {
@@ -857,6 +1042,30 @@ cfgMtDir?.addEventListener("click", () => {
   });
 });
 
+/* ---------------- 悬浮卡片交互 ---------------- */
+
+ovBackBtn?.addEventListener("click", () => {
+  void closeOverlay();
+});
+
+ovCopyBtn?.addEventListener("click", () => {
+  const t = ovTextEl?.textContent ?? "";
+  if (!t) return;
+  void navigator.clipboard.writeText(t);
+  if (ovCopyBtn) {
+    ovCopyBtn.textContent = "已复制";
+    window.setTimeout(() => {
+      if (ovCopyBtn) ovCopyBtn.textContent = "复制";
+    }, 1200);
+  }
+});
+
+// 悬浮中按了热键：后端已经退出悬浮形态并广播出去，这里只需把 UI 切回面板。
+// 不重新 invoke 一次 overlay_close——后端刚做过，再调一次会把还原后的几何又存一遍。
+void listen("overlay-dismiss", () => {
+  if (overlayOn) leaveOverlayUI();
+});
+
 // 下载进度：后端每 512 KB 发一次，这里只做进度条推进。
 void listen<MtProgress>("mt-progress", (ev: { payload: MtProgress }) => {
   const p = ev.payload;
@@ -888,6 +1097,13 @@ selector?.addEventListener("contextmenu", (e) => {
 // 应用本体留在托盘，下次热键再按需重建。
 window.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
+  // 悬浮形态下 Esc 只收卡片、不退面板：用户多半只是不想让它挡着，
+  // 直接连面板一起销毁会把刚翻出来的译文一起丢掉。
+  if (overlayOn) {
+    e.preventDefault();
+    void closeOverlay();
+    return;
+  }
   // 设置面板开着时，Esc 先关它——用户想退出的是那一层
   if (cfgEl && !cfgEl.hidden) {
     e.preventDefault();
@@ -934,6 +1150,21 @@ void (async () => {
 // 自动化钩子：窗口以 ?auto=ocr 打开时直接跑一次识别，便于截图取证。
 if (new URLSearchParams(location.search).get("auto") === "ocr") {
   setTimeout(() => void runOcr(), 400);
+}
+
+// 自动化钩子：?auto=overlay 时用一段样例译文摆出悬浮卡片，便于截图取证。
+// 真实锚点来自选区返回的屏幕坐标，这里用固定矩形代替——只为验证
+// "卡片位置是否贴着框、高度是否被内容撑开、DPI 下文字是否正常"。
+if (new URLSearchParams(location.search).get("auto") === "overlay") {
+  setTimeout(() => {
+    lastRect = { sx: 420, sy: 300, w: 460, h: 74, monitor: 0 };
+    void showOverlay().then(() => {
+      setOverlayText(
+        "保存更改后再关闭？未保存的修改将会丢失，建议先按取消回到编辑器里确认一遍。",
+        "自动 · 312 ms",
+      );
+    });
+  }, 500);
 }
 
 // 刻意不在启动时枚举显示器：那会初始化 D3D 设备并常驻约 42 MB。

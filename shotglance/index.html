@@ -52,6 +52,20 @@
       </section>
     </main>
 
+    <!-- 译文悬浮卡片。它用的是同一个窗口：进入悬浮形态时后端把窗口缩成小卡片、
+         摘掉边框并置顶，这里只保留一块文字。新开窗口要多付一整份 WebView2
+         子进程（约 290 MB），和"空闲 < 80 MB"的红线直接冲突。 -->
+    <div id="ov" class="ov" hidden>
+      <div id="ov-head" class="ov-head">
+        <span id="ov-meta" class="meta"></span>
+        <div class="ov-tools">
+          <button id="ov-copy" class="ghost" title="复制译文">复制</button>
+          <button id="ov-back" class="ghost" title="返回面板（Esc）">返回</button>
+        </div>
+      </div>
+      <p id="ov-text" class="ov-text"></p>
+    </div>
+
     <!-- 选区面：面板窗口在这一刻被临时拉成全屏无边框，
          inset:0 的这层覆盖整块屏幕，底图就是"按下框选那一刻"的冻结画面。 -->
     <div id="selector" class="selector" hidden>
@@ -99,6 +113,13 @@
               </select>
             </div>
           </div>
+
+          <label class="check"
+            ><input id="cfg-auto-trans" type="checkbox" /> 框选后自动翻译，并把译文悬浮在原文旁</label
+          >
+          <p class="hint-line">
+            关掉后恢复"识别完手动点翻译"。按量计费的引擎（DeepL / OpenAI）自动翻会真的产生费用。
+          </p>
 
           <div class="eng-pane" data-eng="deepl" hidden>
             <div class="field">

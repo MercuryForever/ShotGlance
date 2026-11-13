@@ -477,3 +477,64 @@ button:disabled {
   opacity: 0.45;
   cursor: default;
 }
+
+/* ---------------- 译文悬浮卡片 ---------------- */
+
+/* 悬浮形态下整页只留卡片。
+   窗口此刻已经被后端缩到卡片尺寸，面板内容留着会被压扁成一团，
+   所以干脆整块收掉，而不是靠 overflow 裁剪。 */
+body.overlay-mode {
+  background: var(--surface);
+  overflow: hidden;
+}
+
+body.overlay-mode .bar,
+body.overlay-mode main,
+body.overlay-mode #selector,
+body.overlay-mode #cfg {
+  display: none !important;
+}
+
+.ov {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 10px 12px 12px;
+  overflow: hidden;
+  /* 窗口是不透明的（面板建窗时就没开 transparent），圆角画到窗口之外
+     没有意义，所以用一圈内描边把边界交代清楚，看起来是卡片而不是白板。 */
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.ov-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.ov-tools {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.ov-text {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  /* 自身是滚动容器：高度被上限夹住时靠它滚动，
+     同时它的 scrollHeight 才是内容真实高度（前端量高度就靠这个）。 */
+  overflow-y: auto;
+  font-size: 15px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+.ov-text.err {
+  color: #a12a1f;
+}
