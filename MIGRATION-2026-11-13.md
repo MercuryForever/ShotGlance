@@ -8,18 +8,22 @@
 工作区 **7.8 GB**，本次只带走 **约 210 MB（2.7%）**。代码、历史、资产、记忆全在；
 编译缓存和工具链**全部重建**——因为它们的传输成本远高于重建成本（见 §3）。
 
-## 一、上传清单（按优先级，赶时间就先传 P0）
+## 一、包内文件清单（按重要性分级）
 
-| 优先级 | 文件 | 体积 | 200KB/s 耗时 | 作用 |
-|---|---|---|---|---|
-| **P0** | `shotglance-code.zip` | 24 MB | 2.0 min | HEAD 快照，解压即用 |
-| **P0** | `shotglance-history.bundle` | 24 MB | 2.0 min | 完整 git 历史（3 个提交） |
-| **P0** | `ShotGlance_0.1.0_x64-setup.exe` | 22 MB | 1.8 min | 成品安装包，新设备可先验证 |
-| **P1** | `cargo-registry.tar` | 79 MB | 6.6 min | crate 缓存 + 索引，离线编译必需 |
-| **P1** | `node_modules.tar` | 62 MB | 5.2 min | 前端依赖，省一次 `npm ci` |
-| | **合计** | **211 MB** | **约 17.6 min** | 留出 20+ 分钟余量 |
+> **打包形态**：最终交付为**单个** `shotglance-upload-20261113.zip`（约 165 MB，200KB/s 下约 14 分钟），
+> 内含下表 5 个文件 + `SHA256SUMS.txt`。内层两个 `.tar` 在外层 zip 中用 deflate 压缩（约省 40 MB），
+> 已压缩格式（zip / bundle / exe）直接 stored，不再重复压缩。外层包校验值见 `shotglance-upload-20261113.zip.sha256`。
+>
+> 若单包上传中途失败，可退回分批：原始散文件仍保留在 `%TEMP%\sg-upload\`，按 P0 → P1 顺序重传。
 
-P0 三项（70 MB）约 6 分钟就能传完。**如果中途时间不够，砍 P1，绝不动 P0。**
+| 级别 | 文件 | 体积 | 作用 |
+|---|---|---|---|
+| **P0** | `shotglance-code.zip` | 24 MB | HEAD 快照，解压即用 |
+| **P0** | `shotglance-history.bundle` | 24 MB | 完整 git 历史（4 个提交） |
+| **P0** | `ShotGlance_0.1.0_x64-setup.exe` | 22 MB | 成品安装包，新设备可先验证 |
+| **P1** | `cargo-registry.tar` | 77 MB | crate 缓存 + 索引，离线编译必需 |
+| **P1** | `node_modules.tar` | 61 MB | 前端依赖，省一次 `npm ci` |
+| | **散文件合计** | **207 MB** | 打成单包后约 **165 MB** |
 
 ### 还原命令（新设备）
 
