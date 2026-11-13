@@ -103,6 +103,15 @@
 - 所以"硬性要求路径固定"是**误解**：真正的约束是"想让 target 缓存生效就必须同路径"。缓存是优化项，不是依赖项。
 - 若要彻底摆脱（可选，按成本排序）：① 两处 fallback 加 `#[cfg(debug_assertions)]`；② release 加 `--remap-path-prefix` 让 dep-info 存虚拟路径（**未实测**）；③ `CARGO_TARGET_DIR` 固定到用户级目录；④ `mklink /J C:\dev\shotglance` 用逻辑路径锁死（物理位置随意）。
 
+## 迁移（2026-11-13 第二次换设备，200 KB/s 带宽约束下）
+- **原则：只带不可重建的，缓存与工具链全部重建。** 工作区 7.8 GB → 只传 **211 MB（2.7%）**。
+- **上传清单**（产物在 `%TEMP%\sg-upload\`，详见根 `MIGRATION-2026-11-13.md`）：
+  `shotglance-code.zip` 24 MB（HEAD 快照）+ `shotglance-history.bundle` 24 MB（git 全历史）+ 安装包 22 MB
+  + `cargo-registry.tar` 79 MB（crate 缓存+index）+ `node_modules.tar` 62 MB。
+- **target 5.8 GB 不带走**（debug 4.2 + release 1.6）：传要 8 小时，重建仅 30 分钟。**这笔账以后都这么算。**
+- **rustup 工具链 591 MB 不带走**（传 49 分钟超预算）；**VS BuildTools 3.4 GB 在 Program Files，根本不在工作区**，新设备必须重装约 58 分钟。这两项是迁移的固定成本，约 2 小时。
+- 旧 `env-bundle`（1.8 GB）方案**已被 P1 两个 tar 取代**，更小且更聚焦。
+
 ## 环境基线
 Win11 22621 ｜ Rust 1.99.1 stable-**msvc**（无需 `+crt-static`，默认已静态链 vcruntime）｜ MSVC **14.44.35207**（`Program Files (x86)\Microsoft Visual Studio\2022\BuildTools`）｜ WinSDK **10.0.22621.0 + 10.0.26100.0** ｜ Node 22.22.2 ｜ WebView2 152 ｜ NSIS 3.13（已部署到 `%LOCALAPPDATA%\tauri\NSIS`，原包在 `scripts/vendor/`）
 
