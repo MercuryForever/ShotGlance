@@ -141,3 +141,23 @@ Get-FileHash shotglance\src-tauri\vendor\onnxruntime.dll -Algorithm SHA256
 硬指标全部达标：装包 21.91 MiB、托盘 11.5 MB、回收后 32.9 MB、冷启动 <2 s、截图 130 ms。
 
 下一步顺序：译文悬浮层 → OCR 后自动翻译 → 离线解码提速。详见 `HANDOFF.md` §6。
+
+## 工作区与构建环境（2026-11-13 落地）
+
+| 项 | 状态 |
+|---|---|
+| 目录 | 已扁平化为单层，工程在 `shotglance\`，与 target 缓存的绝对路径记录一致 |
+| 版本库 | **已是 git 仓库**，首提交 `8815d52`（58 文件 / 39.8 MB） |
+| Rust 工具链 | 1.99.1 msvc，已从 `env-bundle` 恢复，PATH 已配 |
+| 构建缓存 | `target` 3305 文件 / 1048 MB 已恢复，`cargo check` **0.84–1.15 s** |
+| 前端 | `tsc --noEmit` 0 错 |
+| **MSVC + Win SDK** | **缺失（唯一硬阻塞）**——`cargo check` 可跑，`build` / `tauri:build` 不行 |
+
+装编译器的唯一办法（约 2 小时 + UAC，先把重复代理变量清掉否则 `0x80070057`）：
+
+```powershell
+env-bundle\installers\vs_BuildTools.exe --add Microsoft.VisualStudio.Workload.VCTools `
+  --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --includeRecommended --quiet --wait --norestart
+```
+
+`verify-env.ps1` 另报 Python 3.10/3.11 缺失，那只影响重新导出模型，不影响日常构建。

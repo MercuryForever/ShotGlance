@@ -36,6 +36,17 @@
 - 迁完第一件事：`git init` + 首提交（唯一遗留工程债，`.gitignore` 已备好）。
 - 详细清单与实测记录见 `.workbuddy/memory/2026-11-12.md` 末节「迁移执行清单」。
 
+## 2026-11-13 落地：扁平化 + 环境恢复（当前工作区状态以此为准）
+
+- **目录已扁平化**：原先双层嵌套（`…\2026-11-09-08-43-20\2026-11-09-08-43-20\shotglance`）已理平，工程回到 `…\2026-11-09-08-43-20\shotglance`，与 dep-info 记录一致。空壳目录已移到 `%TEMP%\sg-nested-shell-20261113`。
+- **环境恢复成功（用 env-bundle）**：rustup 152 文件 / 590.5 MB、cargo shim 13 个硬链接、crate 缓存 747 文件 / 76.1 MB、node_modules 455 文件 / 60.6 MB、**target 3305 文件 / 1048 MB 全部命中**。PATH 已追加 `%USERPROFILE%\.cargo\bin`。
+- **实测**：`cargo check` **1.15 s / 0.84 s（连测两次）**，与 11-12 记录的 1.1 s 一致；`tsc --noEmit` 0 错。即 target 缓存跨机复用成功——**前提就是这次扁平化**。
+- **`git init` 已完成（长期技术债清掉）**：首提交 `8815d52`，58 文件 / 39.8 MB，最大的是 onnxruntime.dll 18.4 MB、rec.onnx 10.35 MB、det.onnx 4.53 MB。仓库根在工作区根目录，local user 为 `Administrator <administrator@localhost>`。
+- **补了根 `.gitignore` 的洞**：原先没忽略 `env-bundle/`（1.8 GB），一旦 `git add -A` 会把整个环境包吸进索引。
+- **修了 `restore-env-bundle.ps1` 的真 bug**：第 353 行 `& $cargoExe check 2>&1` 在 `$ErrorActionPreference='Stop'` 下，cargo 写往 stderr 的 "Finished" 会被 PS 包装成 `NativeCommandError` 并终止脚本 → **明明 check 成功却报 exit 1**。已改为临时切 `Continue` + 读 `$LASTEXITCODE`。
+- **唯一硬阻塞：MSVC + Windows SDK 仍缺**（`vswhere` 存在但无 `VC.Tools.x86.x64`，`Windows Kits\10\Include` 不存在）。影响：`cargo check` 能跑（不链接），`cargo build` / `npm run tauri:build` 不行。解法只有联网跑 `env-bundle\installers\vs_BuildTools.exe`，约 2 小时 + UAC。
+- `verify-env.ps1` 当前 **2 项 FAIL**：MSVC（硬阻塞）、Python 3.10/3.11（仅"模型导出"用，不影响构建，可忽略或建 venv）。
+
 ## 环境与迁移（2026-11-12 定案）
 - 新机器环境已配好并验证：Rust 1.99.1 msvc / MSVC 14.44.35207 / SDK 10.0.26100 / Node 22.22.2 / NSIS 缓存；`cargo check` 首过 31 分 10 秒、`tsc --noEmit` 0 错。**Build Tools 装在 `Program Files (x86)`**，查装没装只用 vswhere，别猜路径。
 - **迁移用 `env-bundle`，不要从零下**：`scripts/export-env-bundle.ps1` 导出 → `restore-env-bundle.ps1` 恢复，方案与实测见 `shotglance/ENV-MIGRATION.md`。L1 756 MB / +target 1.0 GB / +vs-layout 2.5 GB；恢复 15–20 分钟（从零是 3 小时，其中 2.5 小时纯下载）。
