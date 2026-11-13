@@ -10,7 +10,7 @@
 
 ## 一、包内文件清单（按重要性分级）
 
-> **打包形态**：最终交付为**单个** `shotglance-upload-20261113.zip`（约 165 MB，200KB/s 下约 14 分钟），
+> **打包形态**：最终交付为**单个** `shotglance-upload-20261113.zip`（**131 MB**，200KB/s 下约 11 分钟），
 > 内含下表 5 个文件 + `SHA256SUMS.txt`。内层两个 `.tar` 在外层 zip 中用 deflate 压缩（约省 40 MB），
 > 已压缩格式（zip / bundle / exe）直接 stored，不再重复压缩。外层包校验值见 `shotglance-upload-20261113.zip.sha256`。
 >
@@ -23,7 +23,7 @@
 | **P0** | `ShotGlance_0.1.0_x64-setup.exe` | 22 MB | 成品安装包，新设备可先验证 |
 | **P1** | `cargo-registry.tar` | 77 MB | crate 缓存 + 索引，离线编译必需 |
 | **P1** | `node_modules.tar` | 61 MB | 前端依赖，省一次 `npm ci` |
-| | **散文件合计** | **207 MB** | 打成单包后约 **165 MB** |
+| | **散文件合计** | **207 MB** | 打成单包后 **131 MB** |
 
 ### 还原命令（新设备）
 
