@@ -1,0 +1,54 @@
+[package]
+name = "shotglance"
+version = "0.1.0"
+description = "ShotGlance - screenshot, OCR, translate, overlay"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "shotglance_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+xcap = { version = "0.9.9", features = ["wgc"] }
+image = { version = "0.25.6", default-features = false, features = ["jpeg", "png"] }
+base64 = "0.23.1"
+# ONNX Runtime 采用 load-dynamic：不在链接期绑定 onnxruntime.lib，
+# 运行时用 libloading 打开 onnxruntime.dll。
+# 原因：pyke CDN 在本机被限速到 ~2 KB/s（32 MB 要几小时），而 PyPI 镜像
+# 能秒级拿到同版本 (1.31.x) 的 dll。顺带的好处是安装包里 dll 可以和
+# 模型一起放进 resources，按需定位，不再依赖系统 PATH。
+ort = { version = "=2.0.0-rc.15", default-features = false, features = [
+  "std",
+  "ndarray",
+  "load-dynamic",
+  "api-31",
+] }
+
+# 翻译层的 HTTP 客户端。
+# 选 ureq 而非 reqwest：同步 API 不像 reqwest 那样把整个 tokio 运行时拖进来，
+# 体积和编译时间都省一大截（截图 OCR 本来就是阻塞流水线，没有异步 IO 需求）。
+# TLS 必须用 native-tls（Windows SChannel）而不是默认的 rustls：
+# rustls 0.23 默认后端 aws-lc-rs 需要 cmake + nasm + clang 才能编译，
+# 这台机器上都没有；ring 后端在 msvc 下也容易卡在汇编器上。
+# SChannel 是系统自带，零额外构建依赖，代价只是不跨平台——
+# 而本项目本来就是 Windows 专属（xcap/wgc）。
+ureq = { version = "2.12", default-features = false, features = [
+  "native-tls",
+  "gzip",
+  "json",
+] }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

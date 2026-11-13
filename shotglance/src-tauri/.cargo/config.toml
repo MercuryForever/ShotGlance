@@ -1,0 +1,9 @@
+# 发布构建前置：取消下面两行的注释，让 exe 静态链接 MSVC 运行库，
+# 从而彻底摆脱目标机器上的 VCRUNTIME140.dll 依赖。
+# 注意：开启后请用 `cargo build --release` 完整验证一次链接是否通过。
+#
+# [target.x86_64-pc-windows-msvc]
+# rustflags = ["-C", "target-feature=+crt-static"]
+
+[net]
+retry = 3

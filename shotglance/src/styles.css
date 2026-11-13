@@ -1,0 +1,479 @@
+:root {
+  --bg: #fbfaf7;
+  --surface: #ffffff;
+  --border: rgba(0, 0, 0, 0.12);
+  --text: #2c2c2a;
+  --muted: #5f5e5a;
+  --accent: #185fa5;
+  --radius: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* 类和属性选择器的权重相同，谁在后面谁赢。凡是给元素设了 display 的
+   （.cfg 是 flex），之后再用 hidden 属性就藏不住了——设置面板会因为
+   这条被整块显示出来。统一在这里兜底，别逐个打补丁。 */
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 0.5px solid var(--border);
+  background: var(--surface);
+}
+
+.brand {
+  font-weight: 500;
+  letter-spacing: 0.2px;
+}
+
+.hint,
+.meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  overflow: auto;
+}
+
+.panel {
+  background: var(--surface);
+  border: 0.5px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.label {
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.4px;
+}
+
+.text {
+  margin: 0;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-height: 44px;
+}
+
+.placeholder {
+  color: #a3a19b;
+}
+
+.ghost {
+  font: inherit;
+  font-size: 12px;
+  color: var(--accent);
+  background: transparent;
+  border: 0.5px solid rgba(24, 95, 165, 0.4);
+  border-radius: 8px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.ghost:hover {
+  background: rgba(24, 95, 165, 0.06);
+}
+
+.preview {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 132px;
+  max-height: 260px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #f2f1ed;
+  border: 0.5px solid var(--border);
+}
+
+.shots {
+  position: relative;
+  display: block;
+  line-height: 0;
+}
+
+.shots[hidden] {
+  display: none;
+}
+
+.preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 258px;
+  object-fit: contain;
+}
+
+/* 文本框覆盖层：inset:0 与图片完全重合，所以子元素可以直接用百分比定位，
+   不需要在前端换算缩放比——换算一定会和 CSS 的 contain 算法打架。 */
+.boxes {
+  position: absolute;
+  inset: 0;
+}
+
+.box {
+  position: absolute;
+  border: 1px solid rgba(24, 95, 165, 0.8);
+  background: rgba(24, 95, 165, 0.08);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.box:hover {
+  background: rgba(24, 95, 165, 0.22);
+}
+
+.box.low {
+  border-color: rgba(196, 122, 30, 0.85);
+  background: rgba(196, 122, 30, 0.10);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.primary {
+  font: inherit;
+  font-size: 12px;
+  color: #fff;
+  background: var(--accent);
+  border: 0.5px solid var(--accent);
+  border-radius: 8px;
+  padding: 4px 14px;
+  cursor: pointer;
+}
+
+.primary:hover {
+  background: #14508b;
+}
+
+.select {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 0.5px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 8px;
+  max-width: 320px;
+  cursor: pointer;
+}
+
+/* ---------- 区域框选 ---------- */
+
+/* 选区期间面板内容全部藏起来。窗口此刻正被拉成全屏，
+   留着面板会让用户看到一帧被拉伸变形的界面。 */
+body.selecting {
+  background: #0b0f14;
+}
+
+body.selecting .bar,
+body.selecting main {
+  display: none;
+}
+
+.selector {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  background: #0b0f14;
+  cursor: crosshair;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+
+.selector[hidden] {
+  display: none;
+}
+
+/* object-fit: fill 而不是 contain：底图必须严格铺满整块屏幕，
+   这样屏幕上任意一点的画面坐标 = 帧坐标 × 缩放比，不会出现黑边导致偏移。
+   缩放比不写死，拖动时按实际渲染尺寸反算（见 main.ts）。 */
+.sel-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  -webkit-user-drag: none;
+  pointer-events: none;
+}
+
+.sel-cross {
+  position: absolute;
+  background: rgba(118, 188, 255, 0.75);
+  pointer-events: none;
+}
+
+.sel-cross.v {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+
+.sel-cross.h {
+  left: 0;
+  right: 0;
+  height: 1px;
+}
+
+/* 选区本体透明，靠一个超大扩散的投影把选区之外压暗——
+   比摆四块遮罩省事，也不会有拼接缝。 */
+.sel-box {
+  position: absolute;
+  border: 1.5px solid #4da3ff;
+  box-shadow: 0 0 0 9999px rgba(6, 10, 16, 0.55);
+  background: transparent;
+  pointer-events: none;
+}
+
+.sel-size {
+  position: absolute;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgba(6, 10, 16, 0.86);
+  border: 0.5px solid rgba(118, 188, 255, 0.45);
+  color: #eaf2ff;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.sel-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(6, 10, 16, 0.72);
+  color: #dfe9f7;
+  font-size: 12px;
+  pointer-events: none;
+}
+
+/* ---------------- 翻译 ---------------- */
+
+.tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tools .meta {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select.compact {
+  font-size: 11px;
+  padding: 3px 6px;
+  max-width: 150px;
+}
+
+.gear {
+  padding: 3px 7px;
+  line-height: 1;
+}
+
+/* ---------------- 翻译设置 ---------------- */
+
+/* 覆盖整块窗口。不用 <dialog>：WebView2 的模态 dialog 会抢焦点，
+   而面板本身是个无边框置顶窗口，模态行为容易把用户卡住。 */
+.cfg {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(20, 20, 18, 0.32);
+  padding: 16px;
+}
+
+.cfg-card {
+  width: 100%;
+  max-width: 460px;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+.cfg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 0.5px solid var(--border);
+  font-size: 13px;
+}
+
+.cfg-body {
+  padding: 14px 16px 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.field > label {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.3px;
+}
+
+.field input,
+.field select {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg);
+  border: 0.5px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 9px;
+  width: 100%;
+}
+
+.field input:focus,
+.field select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.hint-line {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.eng-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(24, 95, 165, 0.04);
+}
+
+.eng-pane[hidden] {
+  display: none;
+}
+
+.row-btns {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.dlbar {
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+
+.dlbar > div {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 0.2s linear;
+}
+
+.cfg-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 0.5px solid var(--border);
+  margin-top: 2px;
+  padding-top: 12px;
+}
+
+.cfg-foot .meta {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-height: 32px;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}

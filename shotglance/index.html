@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ShotGlance</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <span class="brand">ShotGlance</span>
+      <span class="hint">Ctrl+Shift+S 打开 · Esc 关闭</span>
+    </header>
+    <main>
+      <section class="panel">
+        <div class="panel-head">
+          <span class="label">截图</span>
+          <span id="cap-meta" class="meta">未采集</span>
+        </div>
+        <div id="preview" class="preview">
+          <span id="preview-hint" class="placeholder">点击「截屏」采集主显示器</span>
+          <div id="shots" class="shots" hidden>
+            <img id="shot" alt="截图预览" />
+            <div id="boxes" class="boxes"></div>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="region" class="primary" title="拖动框选一块区域直接识别">框选</button>
+          <button id="capture" class="primary">截屏</button>
+          <button id="ocr" class="primary">识别</button>
+          <select id="monitor" class="select" title="选择显示器"></select>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head">
+          <span class="label">原文</span>
+          <span id="ocr-meta" class="meta">OCR 未运行</span>
+        </div>
+        <p id="ocr-text" class="text placeholder">识别结果将显示在这里</p>
+      </section>
+      <section class="panel">
+        <div class="panel-head">
+          <span class="label">译文</span>
+          <div class="tools">
+            <span id="trans-meta" class="meta"></span>
+            <select id="engine" class="select compact" title="翻译引擎"></select>
+            <button id="run" class="ghost">翻译</button>
+            <button id="cfg-open" class="ghost gear" title="翻译设置">⚙</button>
+          </div>
+        </div>
+        <p id="trans-text" class="text placeholder">译文将显示在这里</p>
+      </section>
+    </main>
+
+    <!-- 选区面：面板窗口在这一刻被临时拉成全屏无边框，
+         inset:0 的这层覆盖整块屏幕，底图就是"按下框选那一刻"的冻结画面。 -->
+    <div id="selector" class="selector" hidden>
+      <img id="sel-bg" class="sel-bg" alt="" draggable="false" />
+      <div id="sel-vline" class="sel-cross v" hidden></div>
+      <div id="sel-hline" class="sel-cross h" hidden></div>
+      <div id="sel-box" class="sel-box" hidden></div>
+      <div id="sel-size" class="sel-size" hidden></div>
+      <div class="sel-hint">拖动框选 · 松手立即识别 · 右键或 Esc 取消</div>
+    </div>
+
+    <!-- 翻译设置。做成覆盖层而不是新窗口：新建窗口要付一整份 WebView2
+         进程（约 290 MB），而设置是低频操作，不值得。 -->
+    <div id="cfg" class="cfg" hidden>
+      <div class="cfg-card">
+        <div class="cfg-head">
+          <span>翻译设置</span>
+          <button id="cfg-close" class="ghost">关闭</button>
+        </div>
+
+        <div class="cfg-body">
+          <div class="field">
+            <label for="cfg-engine">引擎</label>
+            <select id="cfg-engine"></select>
+            <p id="cfg-engine-hint" class="hint-line"></p>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="cfg-source">源语言</label>
+              <select id="cfg-source">
+                <option value="auto">自动判断</option>
+                <option value="en">English</option>
+                <option value="zh">中文</option>
+                <option value="ja">日本語</option>
+                <option value="ko">한국어</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="cfg-target">目标语言</label>
+              <select id="cfg-target">
+                <option value="zh-CN">简体中文</option>
+                <option value="en">English</option>
+                <option value="ja">日本語</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="eng-pane" data-eng="deepl" hidden>
+            <div class="field">
+              <label for="cfg-deepl-key">API Key</label>
+              <input id="cfg-deepl-key" type="password" placeholder="free 档的 key 以 :fx 结尾" />
+            </div>
+            <label class="check"><input id="cfg-deepl-pro" type="checkbox" /> Pro 账号（走 api.deepl.com）</label>
+          </div>
+
+          <div class="eng-pane" data-eng="openai" hidden>
+            <div class="field">
+              <label for="cfg-openai-base">端点</label>
+              <input id="cfg-openai-base" placeholder="https://api.openai.com/v1" />
+            </div>
+            <div class="field">
+              <label for="cfg-openai-key">API Key</label>
+              <input id="cfg-openai-key" type="password" />
+            </div>
+            <div class="field">
+              <label for="cfg-openai-model">模型</label>
+              <input id="cfg-openai-model" placeholder="gpt-4o-mini" />
+            </div>
+            <p class="hint-line">任何 OpenAI 兼容服务都行：DeepSeek、通义、one-api、本地 Ollama。</p>
+          </div>
+
+          <div class="eng-pane" data-eng="mymemory" hidden>
+            <div class="field">
+              <label for="cfg-mm-email">Email（可选）</label>
+              <input id="cfg-mm-email" placeholder="you@example.com" />
+            </div>
+            <p class="hint-line">匿名每天 5000 字符，填 email 提到 50000。</p>
+          </div>
+
+          <div class="eng-pane" data-eng="offline" hidden>
+            <div class="field">
+              <label>本地模型</label>
+              <p id="cfg-mt-status" class="meta">检查中…</p>
+              <div class="row-btns">
+                <button id="cfg-mt-dl" class="primary">下载模型（约 113 MB）</button>
+                <button id="cfg-mt-dir" class="ghost">打开目录</button>
+              </div>
+              <div id="cfg-dl-bar" class="dlbar" hidden><div id="cfg-dl-fill"></div></div>
+              <p class="hint-line">
+                模型在用户目录，不打进安装包。也可以自己把 encoder.onnx / decoder.onnx
+                放进去，词表随包自带。
+              </p>
+            </div>
+          </div>
+
+          <div class="cfg-foot">
+            <button id="cfg-test" class="ghost">测试当前引擎</button>
+            <span id="cfg-out" class="meta"></span>
+            <button id="cfg-save" class="primary">保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

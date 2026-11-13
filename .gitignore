@@ -1,0 +1,9 @@
+# 迁移快照（体积大，按需用 shotglance/scripts/export-snapshot.ps1 重新生成）
+shotglance-snapshot-*.zip
+shotglance-snapshot-*-report.txt
+
+# 环境包（1.8 GB：rustup 工具链 + crate 缓存 + node_modules + target）
+# 换机器时单独拷走，不进版本库。生成方式见 shotglance/ENV-MIGRATION.md
+env-bundle/
+
+# 工程内部的忽略规则见 shotglance/.gitignore

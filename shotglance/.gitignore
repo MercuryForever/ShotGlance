@@ -1,0 +1,25 @@
+# 依赖与构建产物（全部可重建，见 HANDOFF.md §3.2）
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+release/
+
+# 下载/安装缓存
+.setup/
+*.exe.download
+*.part
+
+# 编辑器与系统
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# 注意：以下必须提交，别加进忽略
+#   src-tauri/Cargo.lock
+#   src-tauri/models/*.onnx + dict.txt   (15 MB)
+#   src-tauri/assets/mt/tokens.tsv       (1.8 MB)
+#   src-tauri/vendor/onnxruntime.dll     (19 MB，PyPI 镜像取一次很贵)
+#   scripts/vendor/                      (NSIS 离线包)
