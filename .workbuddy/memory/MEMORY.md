@@ -12,7 +12,7 @@
 - 未完成：**译文悬浮层** → OCR 后自动翻译 → 离线解码提速
 - **区域框选**：已实现、已编译、已打包，裁剪与坐标映射实测通过；遮罩在 VM 里的重绘行为异常，待真机复看
 - **翻译层**：见下节
-- 当前机器已重装 Rust 1.99.1 msvc + MSVC 14.44 + SDK 26100 + NSIS 缓存，`npm run tauri:build` 可直接用
+- 环境已全部就绪（2026-11-13）：Rust 1.99.1 msvc + MSVC 14.44.35207 + SDK 22621/26100 + NSIS 已部署，`npm run tauri:build` **96 秒**出 21.87 MiB 安装包。**可以直接进入功能开发。**
 
 ## 工作区现状（2026-11-11 换设备整理后）
 - 体积 **106 MB**（原 7.8 GB）。`target`/`node_modules`/`dist`/`gen`/`.setup` 已全删，都是可重建的；要构建先 `npm ci` 再 `npm run tauri:build`（10–20 分钟）。
@@ -44,8 +44,12 @@
 - **`git init` 已完成（长期技术债清掉）**：首提交 `8815d52`，58 文件 / 39.8 MB，最大的是 onnxruntime.dll 18.4 MB、rec.onnx 10.35 MB、det.onnx 4.53 MB。仓库根在工作区根目录，local user 为 `Administrator <administrator@localhost>`。
 - **补了根 `.gitignore` 的洞**：原先没忽略 `env-bundle/`（1.8 GB），一旦 `git add -A` 会把整个环境包吸进索引。
 - **修了 `restore-env-bundle.ps1` 的真 bug**：第 353 行 `& $cargoExe check 2>&1` 在 `$ErrorActionPreference='Stop'` 下，cargo 写往 stderr 的 "Finished" 会被 PS 包装成 `NativeCommandError` 并终止脚本 → **明明 check 成功却报 exit 1**。已改为临时切 `Continue` + 读 `$LASTEXITCODE`。
-- **唯一硬阻塞：MSVC + Windows SDK 仍缺**（`vswhere` 存在但无 `VC.Tools.x86.x64`，`Windows Kits\10\Include` 不存在）。影响：`cargo check` 能跑（不链接），`cargo build` / `npm run tauri:build` 不行。解法只有联网跑 `env-bundle\installers\vs_BuildTools.exe`，约 2 小时 + UAC。
-- `verify-env.ps1` 当前 **2 项 FAIL**：MSVC（硬阻塞）、Python 3.10/3.11（仅"模型导出"用，不影响构建，可忽略或建 venv）。
+- **MSVC + Windows SDK 已装好（16:48 完成，环境无阻塞）**：MSVC **14.44.35207**、cl.exe 就位、WinSDK **10.0.22621.0 + 10.0.26100.0**（Include/Lib 均齐）、`vswhere -requires VC.Tools.x86.x64` 能查到 `2022\BuildTools`。安装 `exit 3010`（成功需重启），**实测不必重启即可编译**；耗时 **58 分 04 秒**，Packages 缓存 3.9 GB。
+- **决定性验证：`cargo build`（debug）exit 0 / 76.3 s / 产出 `shotglance.exe` 17 MB** —— 本机首次真正链接成功（`cargo check` 不链接，无法证明链接器可用，别拿它当验收）。
+- `verify-env.ps1` 仍剩 Python 3.10/3.11 一项 FAIL（仅"模型导出"用，不影响构建）。
+- 判断 VS 安装是否接近尾声的两个信号：① Packages 增速突然飙到 **19 MB/s**（远超 200 KB/s 网络上限）= 已转入本地解包铺文件；② 组件日志 `dd_setup_*_NNN_*.log` 排到 373/378 且 `winsdksetup.exe` 在跑 `OptionId.AvrfExt`（SDK 收尾特性）。**别对着 Packages 体积做线性外推，会在最后一公里给出严重偏大的估计。**
+- **完整打包已跑通（17:00）**：`npm run tauri:build` exit 0 / **96 s** / `ShotGlance_0.1.0_x64-setup.exe` **21.87 MiB**（22,928,021 B），已归档 `shotglance/release/`。环境至此完全就绪，**剩下的只有功能开发**。
+- 构建耗时基线：`cargo check` 增量 0.84–1.15 s｜`cargo build` debug 76.3 s｜release 1m10s–2m44s｜完整打包 96 s。
 
 ## 环境与迁移（2026-11-12 定案）
 - 新机器环境已配好并验证：Rust 1.99.1 msvc / MSVC 14.44.35207 / SDK 10.0.26100 / Node 22.22.2 / NSIS 缓存；`cargo check` 首过 31 分 10 秒、`tsc --noEmit` 0 错。**Build Tools 装在 `Program Files (x86)`**，查装没装只用 vswhere，别猜路径。
@@ -100,14 +104,19 @@
 - 若要彻底摆脱（可选，按成本排序）：① 两处 fallback 加 `#[cfg(debug_assertions)]`；② release 加 `--remap-path-prefix` 让 dep-info 存虚拟路径（**未实测**）；③ `CARGO_TARGET_DIR` 固定到用户级目录；④ `mklink /J C:\dev\shotglance` 用逻辑路径锁死（物理位置随意）。
 
 ## 环境基线
-Win11 22621 ｜ Rust 1.99.1 stable-**msvc**（无需 `+crt-static`，默认已静态链 vcruntime）｜ MSVC 14.44 ｜ WinSDK 22621 ｜ Node 22.22.2 ｜ WebView2 152 ｜ NSIS 3.13（缓存可从 `scripts/vendor/` 离线恢复）
+Win11 22621 ｜ Rust 1.99.1 stable-**msvc**（无需 `+crt-static`，默认已静态链 vcruntime）｜ MSVC **14.44.35207**（`Program Files (x86)\Microsoft Visual Studio\2022\BuildTools`）｜ WinSDK **10.0.22621.0 + 10.0.26100.0** ｜ Node 22.22.2 ｜ WebView2 152 ｜ NSIS 3.13（已部署到 `%LOCALAPPDATA%\tauri\NSIS`，原包在 `scripts/vendor/`）
 
 ## 高频踩坑（复发率高）
+- **打包前必须清 `*_proxy` / `*_PROXY`**（2026-11-13）：每个新终端会话都从系统继承 `HTTP_PROXY=http://127.0.0.1:13622`，该代理已死 → tauri 下载报 `CONNECT proxy failed: proxy server responded 502/502`，关掉代理后又变 `io: 不知道这样的主机 (os error 11001)`。清进程级八个变量即可。
+- **NSIS 离线包的正确布局**（2026-11-13 踩，卡了两次）：缓存在 `%LOCALAPPDATA%\tauri\NSIS`，**zip 内 `nsis-3.13/` 的内容要直接铺到 `NSIS\` 根**（不能多留一层 `NSIS\nsis-3.13\`）；插件 DLL 必须放 `Plugins\x86-unicode\additional\nsis_tauri_utils.dll`（有 `additional` 这层）。它校验 13 个必需文件，任意一个缺失就 `remove_dir_all` 整个目录重下。源码常量 `NSIS_SHA1=DB14F8AF...9B8E`、`nsis_tauri_utils.dll SHA1=75197FEE...9B860`，与 `scripts/vendor/` 两个文件**逐字符一致**，可完全离线。
+- **VS installer 报"目录被锁定"时先杀 `BackgroundDownload.exe`**（2026-11-13 踩，连败两次）：它加载了 `Installer\resources\app\ServiceHub\...` 下十几个 DLL，只要活着，bootstrapper 就无法重命名 `Installer` 目录做自更新，报 `0x80131500 / exit 5002`。诊断口诀：**目录内子项能 rename 但目录本身不能 → 句柄占用；两者都不能 → 权限问题**。终极定位用 Sysinternals `handle64.exe -nobanner -accepteula -a "<路径>"`。
+- **`EnableLUA=0` 的机器上 `Start-Process -Verb RunAs` 不会弹 UAC**（UAC 被禁用），容易误判"提权没发生"。此时当前进程本来就是完整管理员令牌。
 - 手编必须 `--features tauri/custom-protocol`，否则 exe 是 dev 模式去连 localhost:1420
 - `.ps1` 要么纯 ASCII，要么 UTF-8 **带 BOM**（PS 5.1 按 ANSI 读无 BOM UTF-8，会破坏 param 块且静默丢参数）
 - 给 Rust 传路径必须 `cygpath -w`（`/tmp/x` 会落到 `C:\tmp`）
 - 量内存必须**按 PID 差集 + 轮询**：WebView2 子进程退出要 4–8 s，xcap 的 D3D 缓存 +42 MB 是一次性非泄漏
-- 本工作区**仍不是 git 仓库**（唯一遗留工程债），`.gitignore` 已写好，`git init` 随时可用
+- **PowerShell 原生命令写 stderr 会在 `$ErrorActionPreference='Stop'` 下抛 `NativeCommandError`**：`cargo check` 的成功信息走 stderr，包一层 `2>&1 |` 就变终止错误。这类脚本要临时切 `Continue` 再读 `$LASTEXITCODE`（`restore-env-bundle.ps1` 已修）。
+- 本工作区**已是 git 仓库**（2026-11-13 首提交 `8815d52`），根 `.gitignore` 已忽略 `env-bundle/`、快照 zip；`shotglance/.gitignore` 忽略 `node_modules/dist/target/gen/release`。
 
 ## 待用户拍板
 - 是否要做"OCR 后自动翻译"（框选松手即出译文），还是保持手动点

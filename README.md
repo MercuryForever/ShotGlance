@@ -138,7 +138,7 @@ Get-FileHash shotglance\src-tauri\vendor\onnxruntime.dll -Algorithm SHA256
 ## 当前状态（一句话版）
 
 骨架 / 托盘 / 热键 / 截屏 / OCR / 区域框选 / 翻译层（5 引擎 + 离线）都已完成并打包验证，**只差译文悬浮层**。
-硬指标全部达标：装包 21.91 MiB、托盘 11.5 MB、回收后 32.9 MB、冷启动 <2 s、截图 130 ms。
+硬指标全部达标：装包 **21.87 MiB**、托盘 11.5 MB、回收后 32.9 MB、冷启动 <2 s、截图 130 ms。
 
 下一步顺序：译文悬浮层 → OCR 后自动翻译 → 离线解码提速。详见 `HANDOFF.md` §6。
 
@@ -149,15 +149,20 @@ Get-FileHash shotglance\src-tauri\vendor\onnxruntime.dll -Algorithm SHA256
 | 目录 | 已扁平化为单层，工程在 `shotglance\`，与 target 缓存的绝对路径记录一致 |
 | 版本库 | **已是 git 仓库**，首提交 `8815d52`（58 文件 / 39.8 MB） |
 | Rust 工具链 | 1.99.1 msvc，已从 `env-bundle` 恢复，PATH 已配 |
-| 构建缓存 | `target` 3305 文件 / 1048 MB 已恢复，`cargo check` **0.84–1.15 s** |
+| 构建缓存 | `target` 已恢复，`cargo check` **0.84–1.15 s** |
 | 前端 | `tsc --noEmit` 0 错 |
-| **MSVC + Win SDK** | **缺失（唯一硬阻塞）**——`cargo check` 可跑，`build` / `tauri:build` 不行 |
+| **MSVC 14.44.35207 + Win SDK 22621/26100** | **已装好**（2026-11-13 16:48，耗时 58 分钟） |
+| **完整打包** | **已跑通**：`npm run tauri:build` **96 秒** → 21.87 MiB 安装包 |
 
-装编译器的唯一办法（约 2 小时 + UAC，先把重复代理变量清掉否则 `0x80070057`）：
+构建前务必清掉继承来的代理变量，否则 tauri 下载会 502：
 
 ```powershell
-env-bundle\installers\vs_BuildTools.exe --add Microsoft.VisualStudio.Workload.VCTools `
-  --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --includeRecommended --quiet --wait --norestart
+foreach ($n in @('http_proxy','https_proxy','all_proxy','no_proxy','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY')) {
+  [Environment]::SetEnvironmentVariable($n, $null, 'Process')
+}
 ```
+
+NSIS 已离线部署在 `%LOCALAPPDATA%\tauri\NSIS`（`scripts/vendor\nsis-3.13.zip` 解压，内容直接铺在 `NSIS\` 根，
+插件在 `Plugins\x86-unicode\additional\`）。换机器重建时按这个布局复现即可，无需联网。
 
 `verify-env.ps1` 另报 Python 3.10/3.11 缺失，那只影响重新导出模型，不影响日常构建。
