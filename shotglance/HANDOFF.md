@@ -33,6 +33,7 @@ npm run tauri:build          # 需要 PATH 里有 cargo
 | OCR 峰值 | < 300 MB | 152.7 MB（引擎加载后） | 达标 |
 | 冷启动到首窗 | < 2 s | 87–112 ms | 达标 |
 | 截图耗时 | < 300 ms | 稳态 130 ms（冷 351 ms） | 达标 |
+| 离线翻译（≤30 输出 token） | < 500 ms | 25–80 ms（§1.5 之后；原 133–404 ms） | 达标 |
 | 单文件免安装 | 要求 | NSIS currentUser，WebView2 embedBootstrapper | 达标（Windows） |
 
 已完成 / 未完成：
@@ -108,7 +109,7 @@ npm run tauri:build          # 需要 PATH 里有 cargo
 | `openai` | OpenAI 兼容 | 端点 + Key + 模型 | 任何兼容服务：OpenAI、DeepSeek、通义、one-api、本地 Ollama |
 | `google` | Google 翻译 | — | 网页版 gtx 端点，免密钥，质量好但为非公开接口 |
 | `mymemory` | MyMemory | — | 免密钥，匿名 5000 字符/天，填 email 提到 50000 |
-| `offline` | 本地 Opus-MT | 113 MB 模型 | 完全离线，装一次永久可用 |
+| `offline` | 本地 Opus-MT | 113 MB 模型（可选跑脚本 +32 MB 换 6 倍速） | 完全离线，装一次永久可用 |
 
 **`auto` 的行为**：在线引擎**对冲竞速**（第一个立刻发，之后每 250 ms 补一个，谁先给出有效译文用谁），全部失败再串行落到离线模型。
 
@@ -125,6 +126,7 @@ npm run tauri:build          # 需要 PATH 里有 cargo
 5. **贪婪解码，不用 beam=4**。实测 beam 慢 4 倍，长文本质量差别很小；短句的差异主要来自模型本身而非搜索策略。
 6. **中文排版后处理**（`polish`）：spm 解码后词间是空格，中文里全部要去掉；模型输出的半角 `,` `?` 在中文语境转全角。半角标点转全角时**空格要提前删**，否则会留下"吗 ？"这种两侧带空的全角标点（2026-11-16 修，3 个单测护住）。
 7. **KV cache 增量解码**（2026-11-16，见 §1.4）。
+8. **词表投影 int8 化**（2026-11-16，见 §1.5）：`decoder.int8.onnx` 存在时优先加载，单步 14.84 → 2.37 ms。
 
 ### 1.4 离线解码提速：merged decoder + KV cache（2026-11-16 实现）
 
@@ -159,6 +161,65 @@ npm run tauri:build          # 需要 PATH 里有 cargo
 | 长句（38 词） | 26 | 517 ms | 404 ms | 应用程序无法完成请求的操作，因为网络连接中断。请验证您的代理配置，稍后再试。 |
 
 **排查工具**：`SHOTGLANCE_MT_BENCH=1` 跑离线基准并把 decoder 的完整输入输出签名写进 `%TEMP%\shotglance-mt-bench.txt`；`offline::dump_io()` 可单独打印签名。换模型版本时先看这份签名再改代码。
+
+### 1.5 词表投影 int8 化：单步再快 6 倍（2026-11-16 实现）
+
+§1.4 结尾那句"要继续压只能动量化/算子层"就是这个。做了一轮算子级剖面，结论比预期更明确：**瓶颈不是模型主干，是导出图里一处写坏的词表投影**。
+
+**剖面怎么做的**：`scripts/mt/profile_ops.py`，用 ORT 自带的 `enable_profiling` 落 chrome trace，按 ONNX 节点聚合耗时。必须按最后一次 `If` 的时间窗口切出"单步"——`end_profiling()` 会把 session 创建以来的所有 run（含预热）都写进去，直接除以步数一定算错。
+
+**原图长这样**（merged decoder 的 `If` 子图内）：
+
+```
+shared.weight  uint8 [65001, 512]  33 MB 常量
+  -> Transpose            每步重新转置 33 MB
+  -> DequantizeLinear     每步展开成 133 MB fp32
+  -> MatMul               512 x 65001 fp32 GEMM
+```
+
+权重是常量，ORT 的常量折叠**不跨 `If` 子图**，于是每生成一个 token 都白白重做一次转置和反量化。剖面：单步 40 ms（profile 口径）里 `DequantizeLinear` 占 27.8%、`MatMul` 占 7.1%，六层 transformer 的 FFN/attention 加起来只有 4%。
+
+**改法**（`scripts/mt/transform_lmhead.py`）：把权重预转置成 int8 副本，投影走模型里 FC 层用的同一套模式。
+
+```
+DynamicQuantizeLinear(A)                    1 x 512，激活量化
+MatMulInteger(q, W_T_q, a_zp, w_zp)         int8 GEMM -> 1 x 65001 int32
+Mul(Cast(mm), a_scale * w_scale)            只反量化 1 x 65001
+Add(out, final_logits_bias)
+```
+
+**收益**（`verify_lmhead.py`，同一进程内 A/B，4 线程取最小值）
+
+| 项 | 原 decoder | int8 版 |
+|---|---|---|
+| 单步 | 14.84 ms | **2.37 ms**（6.3×） |
+| 60 token 长序列 | 14.84 ms/步 | 2.52 ms/步（5.9×） |
+| 模型体积 | 57.4 MB | 89.2 MB |
+| 首步 logits 最大误差 | — | 0.234（值域 ±9.8） |
+| argmax 序列 | — | 20/20 完全一致 |
+
+**应用内实测**（`SHOTGLANCE_MT_BENCH=1`，离线引擎，4 次取最小值）
+
+| 文本 | token | §1.4 后 | 本节后 | 累计 vs 原始 | 译文 |
+|---|---|---|---|---|---|
+| `Save changes before closing?` | 8 | 133 ms | **25 ms** | 6.1× | 关闭前保存更改吗？ |
+| `Failed to connect…` | 13 | 209 ms | **43 ms** | 5.9× | 连接到服务器失败。请检查您的网络设置。 |
+| 长句（38 词） | 26 | 404 ms | **80 ms** | 6.8× | 应用程序无法完成请求的操作，因为网络连接中断。请验证您的代理配置，稍后再试。 |
+
+三句译文与改造前**逐字一致**。
+
+**落地方式**：`decoder.int8.onnx` 是可选文件，`offline::decoder_name()` 探测到就直接用，探测不到退回 `decoder.onnx`——下载流程一行没改，用户不跑脚本也能正常用。体积代价 32 MB 只发生在"多存一份 int8 转置权重"上；运行时反而更省：不再每步分配 133 MB 的 fp32 权重临时张量。
+
+**改造后单步的构成**（profile 口径 31 ms）：lm_head 的 int8 GEMM 1.1 ms（8.6%）、KV cache 的 `Concat` 109 次 2.6 ms、`Reshape` 98 次 1.9 ms。剩下的是布局算子，再压要动图结构，收益边际。
+
+**两个实现坑**：
+
+1. **`If` 的 then/else 各有一套同名节点**，不能靠 `id()` 或 `is` 区分——protobuf 的 repeated 容器每次访问都可能返回新的包装对象，`n is mm` 恒为假，替换会静默失效。一律按节点名匹配。
+2. **新节点必须插在 MatMul 原来的位置**，append 到图末尾会让"下游 Add 比它先出现"，`onnx.checker` 直接报拓扑序错误。
+
+encoder 侧不用动：一次前向 1–2 ms（26 token 输入），全是 `DynamicQuantizeMatMul` / `MatMulIntegerToFloat`，没有同类问题。
+
+**排查工具**：`scripts/mt/profile_ops.py`（算子剖面）、`probe_lmhead.py`（打印词表投影附近的图结构）、`probe_pattern.py`（打印 FC/attention 的正确 int8 写法当模板）、`transform_lmhead.py --check`（只报告会改什么）、`verify_lmhead.py`（数值 + 耗时 A/B）。
 
 **实测**（本机，probe = "Failed to connect to the server. Please check your network settings."）
 
@@ -236,7 +297,7 @@ Rust 工具链只需 `stable-msvc`，**不需要** nightly、不需要 `+crt-sta
 | OCR 模型 | `src-tauri/models/{det.onnx,rec.onnx,dict.txt}` | 15 MB | PP-OCRv4，随包分发 |
 | OCR 运行时 | `src-tauri/vendor/onnxruntime.dll` | 19 MB | ORT 1.31.1，不在系统 PATH 上 |
 | 翻译词表 | `src-tauri/assets/mt/tokens.tsv` | 1.8 MB | 65001 行 `id/score/piece`，与模型版本绑死，随包分发 |
-| 脚本 | `scripts/{measure-memory,restore-nsis-cache,make-ocr-sample,export-snapshot}.ps1`、`scripts/gen_icon.py`、`scripts/mt/{ref,cmp,export_vocab,merge_vocab}.py` + `scripts/mt/README.md`、`scripts/vendor/`（NSIS 3.13 + 插件 dll） | 2.4 MB | NSIS vendor 与 mt 转换脚本都是"重建很贵"的东西，必须带 |
+| 脚本 | `scripts/{measure-memory,restore-nsis-cache,make-ocr-sample,export-snapshot}.ps1`、`scripts/gen_icon.py`、`scripts/mt/{ref,cmp,export_vocab,merge_vocab,bench_decode,profile_ops,probe_lmhead,probe_pattern,transform_lmhead,verify_lmhead}.py` + `scripts/mt/README.md`、`scripts/vendor/`（NSIS 3.13 + 插件 dll） | 2.4 MB | NSIS vendor 与 mt 转换脚本都是"重建很贵"的东西，必须带 |
 | 基准 | `src-tauri/tests/ocr-sample.png` | 24 KB | OCR 可复现验证图 |
 | 文档 | `README.md`、本文件、`.workbuddy/memory/*` | 90 KB | 决策依据 + 踩坑记录 + 记忆 |
 | 成品（可选） | `release/ShotGlance_0.1.0_x64-setup.exe` | 22 MB | 不想装工具链时直接安装。`-NoInstaller` 可跳过 |
@@ -411,6 +472,9 @@ powershell -ExecutionPolicy Bypass -File scripts\restore-nsis-cache.ps1
 | merged decoder 的 `use_cache_branch` | 少喂一个输入直接报 `unknown input`；恒定置真则 Reshape 崩 | 首步假、之后真。它决定 "重算整段" 还是 "只算新 token + 读 cache" |
 | past 的 0 长度维 | `If` 子图里报 `The dimension with value zero exceeds the dimension size of the input tensor` | ORT 的 Reshape 不接受 seq=0。首步喂 `[1,8,0,64]` 空张量并让 `use_cache_branch=0`，别塞零值占位 |
 | `present.*.encoder.*` 形状坏 | 前两步正常，第 3 步必崩 | cache 分支给出的 cross-attention present 是 `[0,8,1,64]`。encoder 侧 K/V 全程不变，只收首步的 present |
+| `If` 子图里的常量不折叠 | 词表投影每步重新转置 33 MB、展开成 133 MB fp32，单步白烧 12 ms | ORT 的常量折叠**不跨 `If` 子图**。改成预转置 int8 + `MatMulInteger`，见 §1.5 |
+| protobuf 节点不能按 `id()` 比 | `n is matmul` 恒为假，图改造静默不生效，`onnx.checker` 报拓扑序错 | repeated 容器每次访问都可能返回新 wrapper。改图一律按 `node.name` 匹配 |
+| 图改造后节点顺序 | `onnx.checker` 报 `Nodes in a graph must be topologically sorted` | 新节点必须插在被替换节点**原来的位置**；append 到末尾会被更早的下游节点引用 |
 
 ---
 
@@ -420,20 +484,23 @@ powershell -ExecutionPolicy Bypass -File scripts\restore-nsis-cache.ps1
 
 1. ~~**译文悬浮层**~~ ✅ 2026-11-13 完成，见 §1.3。
 2. ~~**OCR 后自动翻译**~~ ✅ 2026-11-13 完成，做成了设置里的开关（`Cfg.auto_translate`，默认开）。
-3. ~~**离线引擎解码提速**~~ ✅ 2026-11-16 完成：换 merged decoder + KV cache，见 §1.4。典型短句 1.2×、长句 1.6×+；不是原先估的 3–5×，因为瓶颈是每 token 固定的 65001 路输出投影，不是序列长度。要继续压只能动量化/算子层，不是解码结构能解决的。
+3. ~~**离线引擎解码提速**~~ ✅ 2026-11-16 完成，分两步：
+   - merged decoder + KV cache（§1.4）：短句 1.2×、长句 1.6×+。当时判断"要继续压只能动量化/算子层"。
+   - 词表投影 int8 化（§1.5）：算子剖面定位到 `If` 子图里每步重算的 `Transpose + DequantizeLinear`，改成 int8 直算后**单步 14.84 → 2.37 ms（6.3×）**，累计对原始实现 6.1–6.8×。三句基准译文逐字不变。
 4. **识别小批优化** — 同批 padding 到最大宽，一次前向；可压掉逐行调度的开销。区域框选落地后全屏场景已不常见，优先级下调。
-5. **悬浮卡片样式打磨**（可选）— 目前窗口不透明，卡片是方角 + 内描边。真圆角/投影需要建窗时开 `transparent(true)`，或改用原生 Win32 分层窗口（GDI+ 逐像素 alpha），代价与风险都比现在高，暂不做。
+5. **Decoder 布局算子收敛**（新）— §1.5 之后单步 2.4 ms 里，KV cache 的 `Concat`(109 次)/`Reshape`(98 次)/`Unsqueeze`(50 次) 占三成。要压得改图结构（例如只导出 decoder 侧 past、砍掉坏掉的 `present.encoder.*`），收益两位数百分比，风险中等。
+6. **悬浮卡片样式打磨**（可选）— 目前窗口不透明，卡片是方角 + 内描边。真圆角/投影需要建窗时开 `transparent(true)`，或改用原生 Win32 分层窗口（GDI+ 逐像素 alpha），代价与风险都比现在高，暂不做。
 
 ### 6.2 待确认
 
 - **跨平台**：目前只在 Windows 验证过。macOS 需要 `WKWebView` + 屏幕录制权限（首次采集要用户授权），Linux 需要 `webkit2gtk`（无法完全自包含）。要上这两端，得先确认优先级。
-- 用户称呼 / 我的称呼尚未确定 —— 定了就补 `SOUL.md` / `IDENTITY.md` / `USER.md`。
+- ~~用户称呼 / 我的称呼~~ → 2026-11-16 已落定（我叫「镜」），`SOUL.md` / `IDENTITY.md` / `USER.md` 已写，别再每轮重问。
 
 ### 6.3 已知技术债
 
-- 离线翻译模型（113 MB）不随包分发，首次使用需下载；没网又没下过模型的机器上 `auto` 只能依赖在线。
+- 离线翻译模型不随包分发，首次使用需下载（原版 113 MB；跑过 `transform_lmhead.py` 后 146 MB，多出的 32 MB 换 6 倍单步速度）。
+- `decoder.int8.onnx` 需要手工跑 Python 脚本生成——Rust 侧只做"探测有就用"，不做自动转换。要做成全自动，得在 Rust 里操作 ONNX protobuf，成本远高于收益。
 - 识别在长文本下会丢词间空格（模型层问题，可后处理补救）。
-- `src-tauri/gen` 与 `Cargo.lock` 的变动没有版本控制兜底 —— **当前工作区不是 git 仓库**，建议尽快 `git init` 并把快照里的白名单写进 `.gitignore` 的反向规则。
 
 ---
 

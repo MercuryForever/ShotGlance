@@ -32,6 +32,13 @@ cp tokens.tsv ../../src-tauri/assets/mt/tokens.tsv
 # 4. 装进本地模型目录
 mkdir -p "$APPDATA/ShotGlance/models/opus-mt-en-zh"
 cp encoder.onnx decoder.onnx tokens.tsv "$APPDATA/ShotGlance/models/opus-mt-en-zh/"
+
+# 5. （可选，强烈建议）生成词表投影加速版
+#    decoder.int8.onnx 存在时运行时优先用它，单步 14.8ms -> 2.4ms
+python transform_lmhead.py --src "$APPDATA/ShotGlance/models/opus-mt-en-zh/decoder.onnx" \
+                           --out "$APPDATA/ShotGlance/models/opus-mt-en-zh/decoder.int8.onnx"
+python verify_lmhead.py "$APPDATA/ShotGlance/models/opus-mt-en-zh/decoder.onnx" \
+                        "$APPDATA/ShotGlance/models/opus-mt-en-zh/decoder.int8.onnx"
 ```
 
 ## 各脚本职责
@@ -43,6 +50,38 @@ cp encoder.onnx decoder.onnx tokens.tsv "$APPDATA/ShotGlance/models/opus-mt-en-z
 | `ref.py` | ONNX 参考推理。跑通它才说明模型可用，也是 Rust 实现的对照基线 |
 | `cmp.py` | 贪婪 vs beam=4 的质量/耗时对比（结论：贪婪胜出） |
 | `bench_decode.py` | 全序列重算 vs merged+KV cache 的耗时曲线（2026-11-16 提速的依据） |
+| `profile_ops.py` | 算子级剖面，按 ONNX 节点聚合耗时。找瓶颈第一步 |
+| `probe_lmhead.py` | 打印词表投影附近的图结构（谁在每步转置/反量化 33MB 权重） |
+| `probe_pattern.py` | 打印 FC/attention 的正确 int8 写法，作为改造模板 |
+| `transform_lmhead.py` | **加速**：把 lm_head 改成 int8 直算，产出 `decoder.int8.onnx` |
+| `verify_lmhead.py` | 校验改造前后 logits/argmax 一致，并对比单步耗时 |
+
+## 词表投影：为什么值得单独改一次
+
+merged decoder 的 `If` 子图里，词表投影是这么写的：
+
+```
+shared.weight (uint8 [65001,512], 33MB 常量)
+  -> Transpose -> DequantizeLinear -> MatMul
+```
+
+权重要么是常量，要么不是，而 ORT 的常量折叠不跨 `If` 子图——于是**每生成一个
+token 都重新转置 33 MB、再展开成 133 MB fp32**。实测单步 14.8 ms，其中约 12 ms
+耗在这两步上，跟模型主干完全无关。
+
+`transform_lmhead.py` 把同一份权重换成预转置的 int8 副本，投影走
+`DynamicQuantizeLinear + MatMulInteger`，只反量化 1×65001 的输出：
+
+```
+单步 14.84 ms -> 2.37 ms     长序列（60 token）同样 5.9x
+首步 logits 最大误差 0.234（值域 ±9.8），argmax 序列 20/20 一致
+```
+
+代价是多 32 MB 的 int8 转置权重（57MB -> 89MB）。运行时反而省内存：不再每步
+分配 133 MB 的 fp32 权重临时张量。
+
+改造后 profile 里最大的单项变成 lm_head 的 int8 GEMM（约 1.1 ms，占单步 8.6%），
+其次是 KV cache 的 `Concat`(109 次) 和 `Reshape`(98 次) 这类布局算子。
 
 ## 最容易踩的坑
 
