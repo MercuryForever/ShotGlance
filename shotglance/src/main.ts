@@ -114,6 +114,8 @@ interface ModelStatus {
   installed: boolean;
   dir: string;
   bytes: number;
+  /** 实际生效的 decoder 文件名；含 "int8" 表示走了加速版 */
+  decoder: string;
 }
 
 interface MtProgress {
@@ -438,8 +440,11 @@ async function refreshMtStatus(): Promise<void> {
   if (!cfgMtStatus) return;
   try {
     const s = await invoke<ModelStatus>("mt_status");
+    // decoder 可以是原版或 int8 加速版，后者多占 32 MB 但每步快 6 倍。
+    // 用户看到体积变大会困惑，所以显式标出来。
+    const fast = s.decoder.includes("int8") ? " · 加速版" : "";
     cfgMtStatus.textContent = s.installed
-      ? `已安装 · ${bytesText(s.bytes)} · ${s.dir}`
+      ? `已安装 · ${bytesText(s.bytes)}${fast} · ${s.dir}`
       : "未安装（选它之前需要先下载）";
     if (cfgMtDl) cfgMtDl.disabled = s.installed;
     if (cfgMtDl) cfgMtDl.textContent = s.installed ? "已下载" : "下载模型（约 113 MB）";

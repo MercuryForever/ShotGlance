@@ -58,11 +58,34 @@ fn file_ok(p: &Path, min_bytes: u64) -> bool {
     p.metadata().map(|m| m.len() >= min_bytes).unwrap_or(false)
 }
 
+/// 可选的加速版 decoder（`scripts/mt/transform_lmhead.py` 生成）。
+///
+/// 原版模型把词表投影写成 `Transpose(权重) -> DequantizeLinear -> MatMul`，
+/// 而这一段在 merged decoder 的 `If` 子图里，ORT 的常量折叠管不到，
+/// 于是**每生成一个 token 都要重新转置 33 MB 权重、再展开成 133 MB fp32**。
+/// 实测单步 14.8 ms，其中约 12 ms 是这两步纯浪费。
+///
+/// 加速版把同样的权重换成正向转置好的 int8 副本，词表投影直接走
+/// `DynamicQuantizeLinear + MatMulInteger`，只反量化 1×65001 的输出。
+/// 单步降到 2.4 ms，argmax 输出与原版逐位一致。
+///
+/// 代价是文件大 32 MB（多一份 int8 转置权重），所以做成可选文件：
+/// 有就用，没有就退回原版，下载流程完全不用改。
+const FAST_DECODER: &str = "decoder.int8.onnx";
+
+fn decoder_name(dir: &Path) -> &'static str {
+    if file_ok(&dir.join(FAST_DECODER), 60 * 1024 * 1024) {
+        FAST_DECODER
+    } else {
+        "decoder.onnx"
+    }
+}
+
 /// 三个文件齐了才算可用。阈值给得比实际大小低一截，只防"下了一半"。
 pub fn installed() -> bool {
     let d = models_dir();
     file_ok(&d.join("encoder.onnx"), 40 * 1024 * 1024)
-        && file_ok(&d.join("decoder.onnx"), 45 * 1024 * 1024)
+        && file_ok(&d.join(decoder_name(&d)), 45 * 1024 * 1024)
         && file_ok(&d.join("tokens.tsv"), 1024 * 1024)
 }
 
@@ -72,11 +95,14 @@ pub struct ModelStatus {
     pub installed: bool,
     pub dir: String,
     pub bytes: u64,
+    /// 实际生效的 decoder 文件名（`decoder.int8.onnx` 表示走了加速版）
+    pub decoder: String,
 }
 
 pub fn status() -> ModelStatus {
     let d = models_dir();
-    let bytes = ["encoder.onnx", "decoder.onnx", "tokens.tsv"]
+    let dec = decoder_name(&d);
+    let bytes = ["encoder.onnx", dec, "tokens.tsv"]
         .iter()
         .filter_map(|f| d.join(f).metadata().ok().map(|m| m.len()))
         .sum();
@@ -84,6 +110,7 @@ pub fn status() -> ModelStatus {
         installed: installed(),
         dir: d.display().to_string(),
         bytes,
+        decoder: dec.to_string(),
     }
 }
 
@@ -408,7 +435,7 @@ fn load() -> Result<Model, String> {
     };
 
     let enc = mk("encoder.onnx")?;
-    let dec = mk("decoder.onnx")?;
+    let dec = mk(decoder_name(&dir))?;
 
     // 输入名只在装载时取一次。merged decoder 有 27 个输入，其中 24 个是
     // past_key_values.N.{decoder,encoder}.{key,value}，靠名字分派比靠下标稳。
