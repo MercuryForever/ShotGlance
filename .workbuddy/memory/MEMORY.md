@@ -129,4 +129,5 @@ Win11 22621｜Rust 1.99.1 stable-**msvc**（无需 `+crt-static`，默认已静�
 
 ## 待用户拍板
 - 是否上 macOS / Linux（macOS 需屏幕录制授权，Linux 无法完全自包含）
-- 用户称呼 / 我的称呼（定了补 `SOUL.md` / `IDENTITY.md` / `USER.md`）
+- ~~用户称呼 / 我的称呼~~ → 2026-11-16 已落定：我叫「镜」，用户称呼未知（默认用"你"），
+  三份身份文件已写、`BOOTSTRAP.md` 已删。别再每轮重问。
