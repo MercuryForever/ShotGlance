@@ -15,7 +15,9 @@ curl -L "$BASE/Xenova/opus-mt-en-zh/resolve/main/config.json"            -o conf
 curl -L "$BASE/Xenova/opus-mt-en-zh/resolve/main/source.spm"             -o source.spm
 curl -L "$BASE/Xenova/opus-mt-en-zh/resolve/main/target.spm"             -o target.spm
 curl -L "$BASE/Xenova/opus-mt-en-zh/resolve/main/onnx/encoder_model_quantized.onnx" -o encoder.onnx
-curl -L "$BASE/Xenova/opus-mt-en-zh/resolve/main/onnx/decoder_model_quantized.onnx" -o decoder.onnx
+# decoder 必须用 **merged** 版：它带 24 个 past_key_values 输入，
+# 才能做 KV cache 增量解码。普通 decoder_model_quantized.onnx 只能全序列重算。
+curl -L "$BASE/Xenova/opus-mt-en-zh/resolve/main/onnx/decoder_model_merged_quantized.onnx" -o decoder.onnx
 # vocab.json 在原始仓库，Xenova 的镜像里没有——缺了它 id 对不上，译文全是乱码
 curl -L "$BASE/Helsinki-NLP/opus-mt-en-zh/resolve/main/vocab.json"       -o vocab.json
 
@@ -40,6 +42,7 @@ cp encoder.onnx decoder.onnx tokens.tsv "$APPDATA/ShotGlance/models/opus-mt-en-z
 | `merge_vocab.py` | **关键**：把 `vocab.json` 的模型 id 和 `source.spm` 的分数合成 `tokens.tsv` |
 | `ref.py` | ONNX 参考推理。跑通它才说明模型可用，也是 Rust 实现的对照基线 |
 | `cmp.py` | 贪婪 vs beam=4 的质量/耗时对比（结论：贪婪胜出） |
+| `bench_decode.py` | 全序列重算 vs merged+KV cache 的耗时曲线（2026-11-16 提速的依据） |
 
 ## 最容易踩的坑
 

@@ -123,7 +123,42 @@ npm run tauri:build          # 需要 PATH 里有 cargo
 3. **spm 与 vocab 是两套 id，必须过 `vocab.json` 重映射**。`source.spm` 只有 32000 个 piece，模型 embedding 却是 65001 行；`vocab.json` 给出 piece → 模型 id 的映射。直接拿 spm 的 id 喂模型只会得到乱码——这是接 Marian 最容易踩的坑。`tokens.tsv` 就是把两者合成一份 `id / score / piece`。
 4. **自己实现 SentencePiece 编码**（`Vocab::encode`）：空白折叠成 `▁` + 行首补 `▁` + Unigram Viterbi。不引 `sentencepiece` crate（要 cmake 编 C++）也不引 `tokenizers`（需要 tokenizer.json，Xenova 仓库只有 .spm）。`unk` 的分数取 `min_score - 10`，压不到最低的话 Viterbi 会认为"整句都是 unk"更优。
 5. **贪婪解码，不用 beam=4**。实测 beam 慢 4 倍，长文本质量差别很小；短句的差异主要来自模型本身而非搜索策略。
-6. **中文排版后处理**（`polish`）：spm 解码后词间是空格，中文里全部要去掉；模型输出的半角 `,` `?` 在中文语境转全角。
+6. **中文排版后处理**（`polish`）：spm 解码后词间是空格，中文里全部要去掉；模型输出的半角 `,` `?` 在中文语境转全角。半角标点转全角时**空格要提前删**，否则会留下"吗 ？"这种两侧带空的全角标点（2026-11-16 修，3 个单测护住）。
+7. **KV cache 增量解码**（2026-11-16，见 §1.4）。
+
+### 1.4 离线解码提速：merged decoder + KV cache（2026-11-16 实现）
+
+原实现每步都把整段前缀重新喂给 decoder（`[1, seq]` → 全量重算），seq 越长越慢。改成 merged decoder 后每步只算 1 个新 token，历史留在 cache 里。
+
+**换模型**：`decoder_model_quantized.onnx` → `decoder_model_merged_quantized.onnx`。两者体积几乎相同（60.2 MB），merged 版把"首步无 cache"和"后续步带 cache"两条路径合进一个图，多出 1 个 `use_cache_branch` 输入和 24 个 `past_key_values.N.{decoder,encoder}.{key,value}` 输入/输出。
+
+**三个非踩不可的坑**（都记在 §5）：
+
+1. **`use_cache_branch` 不能省**。首步必须置假（走"无 cache"分支，cross-attention 的 K/V 由 encoder 输出算出），之后置真。恒定置真会拿空 past 当 cross K/V，直接报 Reshape 错。
+2. **past 不能用 0 长度占位**。虽然 `past_key_values.*` 声明为 `[-1, 8, -1, 64]`，看起来 seq=0 合法，但 ONNX Runtime 的 Reshape 不接受 0 长度维——它报的是 `The dimension with value zero exceeds the dimension size of the input tensor`，位置在 `If` 子图里，非常不好认。正确做法是首步就喂 `[1, 8, 0, 64]` 的空张量，让 ORT 自己走无 cache 分支；不能像我一开始那样自作聪明塞 `[1, 8, 1, 64]` 的零占位。
+3. **cache 分支给出的 `present.*.encoder.*` 是坏的**（形状 `[0, 8, 1, 64]`，batch 维变成 0）。cross-attention 的 K/V 整段解码都不变，所以只收首步的 present、之后不再更新 encoder 侧，否则第 3 步必崩。
+
+**收益：看长度，不看倍数**（同一台机器，decode 段计时，4 线程）
+
+| 输出 token 数 | 全序列重算 | merged + KV | 倍数 |
+|---|---|---|---|
+| 8 | 153 ms | 129 ms | 1.18× |
+| 13 | 252 ms | 207 ms | 1.22× |
+| 26 | 543 ms | 432 ms | 1.26× |
+| 50 | 1229 ms | 848 ms | 1.45× |
+| 80 | 2217 ms | 1360 ms | 1.63× |
+
+**为什么不是文档原先估的 3–5 倍**：这台机器上每步的固定成本约 15 ms，其中最大一块是 65001 路输出投影（512×65001 int8 MatMul，每 token 33M MAC）。它跟序列长度无关，KV cache 消不掉。KV cache 只消掉随长度平方增长的那部分，所以短句只有 1.2×，长句才逐步逼近 3×。顺带验证了线程数不是瓶颈：1/2/4/8/20 线程分别是 20.8/17.4/17.2/17.0/23.2 ms/步，4 线程已饱和（也符合内存红线的取舍）。
+
+**应用内实测**（`SHOTGLANCE_MT_BENCH=1`，离线引擎，取 4 次最小值）
+
+| 文本 | token | 改造前 | 改造后 | 译文 |
+|---|---|---|---|---|
+| `Save changes before closing?` | 8 | 160 ms | 133 ms | 关闭前保存更改吗？ |
+| `Failed to connect…` | 13 | 257 ms | 209 ms | 连接到服务器失败。请检查您的网络设置。 |
+| 长句（38 词） | 26 | 517 ms | 404 ms | 应用程序无法完成请求的操作，因为网络连接中断。请验证您的代理配置，稍后再试。 |
+
+**排查工具**：`SHOTGLANCE_MT_BENCH=1` 跑离线基准并把 decoder 的完整输入输出签名写进 `%TEMP%\shotglance-mt-bench.txt`；`offline::dump_io()` 可单独打印签名。换模型版本时先看这份签名再改代码。
 
 **实测**（本机，probe = "Failed to connect to the server. Please check your network settings."）
 
@@ -373,6 +408,9 @@ powershell -ExecutionPolicy Bypass -File scripts\restore-nsis-cache.ps1
 | Marian 的 spm 与 vocab 是两套 id | 直接用 spm 的 id 喂模型，输出全是乱码 | `source.spm` 只有 32000 个 piece，embedding 是 65001 行；必须拿 piece 字符串过 `vocab.json` 映射。构建期合成 `tokens.tsv` 一次解决 |
 | SentencePiece 的 `unk` 分数 | 自己实现 Viterbi 时整句输出 unk | `unk_score` 要取 `min_score - 10`；spm 报的 unk 分数是 0，直接用它会让 unk 路径得分最高 |
 | 目标语言中文的词间空格 | 译文里每个词之间都有空格（`连接到服务器失败。 请检查`） | spm 解码后要把 `▁` 还原成空格，但中文之间不该有空格；`polish()` 里删中文→空格、空格→中文标点、中文旁半角标点转全角 |
+| merged decoder 的 `use_cache_branch` | 少喂一个输入直接报 `unknown input`；恒定置真则 Reshape 崩 | 首步假、之后真。它决定 "重算整段" 还是 "只算新 token + 读 cache" |
+| past 的 0 长度维 | `If` 子图里报 `The dimension with value zero exceeds the dimension size of the input tensor` | ORT 的 Reshape 不接受 seq=0。首步喂 `[1,8,0,64]` 空张量并让 `use_cache_branch=0`，别塞零值占位 |
+| `present.*.encoder.*` 形状坏 | 前两步正常，第 3 步必崩 | cache 分支给出的 cross-attention present 是 `[0,8,1,64]`。encoder 侧 K/V 全程不变，只收首步的 present |
 
 ---
 
@@ -382,7 +420,7 @@ powershell -ExecutionPolicy Bypass -File scripts\restore-nsis-cache.ps1
 
 1. ~~**译文悬浮层**~~ ✅ 2026-11-13 完成，见 §1.3。
 2. ~~**OCR 后自动翻译**~~ ✅ 2026-11-13 完成，做成了设置里的开关（`Cfg.auto_translate`，默认开）。
-3. **离线引擎解码提速** — 现在每步全量重算 decoder（30 token 约 700 ms）。换 merged decoder + KV cache 能快 3–5 倍，但输入输出要管 24 个 past 张量，复杂度不低。
+3. ~~**离线引擎解码提速**~~ ✅ 2026-11-16 完成：换 merged decoder + KV cache，见 §1.4。典型短句 1.2×、长句 1.6×+；不是原先估的 3–5×，因为瓶颈是每 token 固定的 65001 路输出投影，不是序列长度。要继续压只能动量化/算子层，不是解码结构能解决的。
 4. **识别小批优化** — 同批 padding 到最大宽，一次前向；可压掉逐行调度的开销。区域框选落地后全屏场景已不常见，优先级下调。
 5. **悬浮卡片样式打磨**（可选）— 目前窗口不透明，卡片是方角 + 内描边。真圆角/投影需要建窗时开 `transparent(true)`，或改用原生 Win32 分层窗口（GDI+ 逐像素 alpha），代价与风险都比现在高，暂不做。
 

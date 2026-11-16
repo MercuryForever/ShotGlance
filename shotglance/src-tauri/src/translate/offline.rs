@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use ort::session::{builder::GraphOptimizationLevel, Session};
+use ort::session::{builder::GraphOptimizationLevel, Session, SessionInputValue};
 use ort::value::Tensor;
 
 use super::{Cfg, Engine, Request};
@@ -27,6 +27,13 @@ const UNK: u32 = 1;
 const VOCAB: usize = 65001;
 /// 位置编码上限
 const MAX_POS: usize = 512;
+
+/// merged decoder 的注意力几何（来自模型 config.json：d_model 512、
+/// decoder 8 头、6 层）。第一步要显式喂 24 个空 past 张量，形状必须对：
+/// 6 层 × (self-attention k/v + cross-attention k/v) = 24。
+const DEC_HEADS: i64 = 8;
+const DEC_LAYERS: usize = 6;
+const HEAD_DIM: i64 = 64;
 
 pub struct Offline;
 
@@ -289,11 +296,15 @@ fn polish(s: &str) -> String {
         let nxt = chars.get(i + 1).copied();
 
         if c == ' ' {
+            let prev_cjk = prev.map(is_cjk).unwrap_or(false);
             let drop = match nxt {
                 // 标点前不留空格
                 Some(n) if ZH_PUNCT.contains(n) => true,
+                // 半角标点紧跟中文时下面会转成全角，空格现在就得去掉，
+                // 否则会留下"吗 ？"这种两侧带空的全角标点
+                Some(n) if prev_cjk && ",?!;:".contains(n) => true,
                 // 中文之间不留空格
-                Some(n) if is_cjk(n) && prev.map(is_cjk).unwrap_or(false) => true,
+                Some(n) if is_cjk(n) && prev_cjk => true,
                 _ => false,
             };
             if drop {
@@ -317,12 +328,12 @@ fn polish(s: &str) -> String {
         }
     }
 
-    // 全角标点后面若还有空格，一并去掉
+    // 全角标点后面若还有空格，一并去掉（spm 可能连出两个）
     let mut cleaned = String::with_capacity(out.len());
     let mut it = out.chars().peekable();
     while let Some(c) = it.next() {
         cleaned.push(c);
-        if ZH_PUNCT.contains(c) && it.peek() == Some(&' ') {
+        while ZH_PUNCT.contains(c) && it.peek() == Some(&' ') {
             it.next();
         }
     }
@@ -335,6 +346,35 @@ struct Model {
     enc: Session,
     dec: Session,
     vocab: Vocab,
+    /// decoder 的输入名，装载时按模型声明的顺序抓一次。
+    /// merged decoder 的 past 名字里带层号，硬编码顺序换模型就会静默错位。
+    dec_inputs: Vec<String>,
+}
+
+/// 一层注意力的 KV 缓存副本。
+///
+/// 为什么要复制：`Session::run` 的输出借用 session（`run(&mut self)`），
+/// 同一 session 的下一轮输入不能直接引用上一轮的输出。24 个张量每步
+/// 复制一次，代价是几百 KB 的 memcpy，比重新算一遍便宜两个数量级。
+#[derive(Clone)]
+struct Past {
+    shape: Vec<i64>,
+    data: Vec<f32>,
+}
+
+/// 解码耗时分解。只给 `translate_probe` 用——正常翻译路径不传，
+/// 也就不为计时付任何代价。
+#[derive(Default, Clone, Copy)]
+pub struct Stats {
+    /// encoder 一次前向
+    pub enc_ms: u128,
+    /// decoder 全部步数合计
+    pub dec_ms: u128,
+    /// 第一步耗时。KV cache 的收益主要体现在"不再随长度变慢"，
+    /// 所以首步与后续步必须分开看
+    pub first_step_ms: u128,
+    /// 生成了多少个 token（不含 EOS）
+    pub steps: usize,
 }
 
 fn slot() -> &'static Mutex<Option<Model>> {
@@ -370,7 +410,27 @@ fn load() -> Result<Model, String> {
     let enc = mk("encoder.onnx")?;
     let dec = mk("decoder.onnx")?;
 
-    Ok(Model { enc, dec, vocab })
+    // 输入名只在装载时取一次。merged decoder 有 27 个输入，其中 24 个是
+    // past_key_values.N.{decoder,encoder}.{key,value}，靠名字分派比靠下标稳。
+    let dec_inputs: Vec<String> = dec.inputs().iter().map(|o| o.name().to_string()).collect();
+    let past = dec_inputs
+        .iter()
+        .filter(|n| n.starts_with("past_key_values."))
+        .count();
+    if past != DEC_LAYERS * 4 {
+        return Err(format!(
+            "decoder 不是带 KV cache 的合并版：past 张量 {past} 个，应为 {}。\
+             旧版模型请重新下载离线模型。",
+            DEC_LAYERS * 4
+        ));
+    }
+
+    Ok(Model {
+        enc,
+        dec,
+        vocab,
+        dec_inputs,
+    })
 }
 
 fn with_model<T>(f: impl FnOnce(&mut Model) -> Result<T, String>) -> Result<T, String> {
@@ -405,99 +465,226 @@ impl Engine for Offline {
             return Err("模型未下载".into());
         }
         let max_new = cfg.offline_max_tokens.clamp(16, 256);
-
-        with_model(|m| {
-            let ids = m.vocab.encode(&req.text);
-            if ids.is_empty() {
-                return Ok(String::new());
-            }
-            // 位置编码上限 512，留一个位置给末尾的 </s>
-            let len = ids.len().min(MAX_POS - 1);
-            let mut src: Vec<i64> = ids[..len].iter().map(|&x| x as i64).collect();
-            // Marian 要求源序列以 </s> 收尾，否则长句断句明显变差
-            src.push(EOS as i64);
-            let len = src.len();
-            let mask: Vec<i64> = vec![1; len];
-
-            let t_ids = Tensor::from_array(([1i64, len as i64], src))
-                .map_err(|e| format!("构造 encoder 输入失败：{e}"))?;
-            let t_mask = Tensor::from_array(([1i64, len as i64], mask.clone()))
-                .map_err(|e| format!("构造 mask 失败：{e}"))?;
-
-            // 输入顺序取自模型定义（encoder: input_ids, attention_mask），
-            // 不能用名字传，rc.15 的 inputs! 只认位置。
-            let enc_out = m
-                .enc
-                .run(ort::inputs![t_ids, t_mask])
-                .map_err(|e| format!("encoder 推理失败：{e}"))?;
-            let (h_shape, hidden) = enc_out[0]
-                .try_extract_tensor::<f32>()
-                .map_err(|e| format!("读取 encoder 输出失败：{e}"))?;
-            let hidden: Vec<f32> = hidden.to_vec();
-            // 用真实输出形状而不是硬编码 512，换模型时不会错位
-            let h_dims: Vec<i64> = h_shape.iter().map(|&d| d as i64).collect();
-            let h_shape_arr = [
-                *h_dims.first().unwrap_or(&1),
-                *h_dims.get(1).unwrap_or(&(len as i64)),
-                *h_dims.get(2).unwrap_or(&512),
-            ];
-
-            let mut cur: Vec<i64> = vec![PAD as i64];
-            let mut out: Vec<u32> = Vec::with_capacity(max_new);
-
-            for _ in 0..max_new {
-                let seq = cur.len() as i64;
-                let t_in = Tensor::from_array(([1i64, seq], cur.clone()))
-                    .map_err(|e| format!("构造 decoder 输入失败：{e}"))?;
-                let t_m = Tensor::from_array(([1i64, len as i64], mask.clone()))
-                    .map_err(|e| format!("构造 decoder mask 失败：{e}"))?;
-                let t_h = Tensor::from_array((h_shape_arr, hidden.clone()))
-                    .map_err(|e| format!("构造 hidden 失败：{e}"))?;
-
-                // 顺序取自模型定义（decoder: encoder_attention_mask,
-                // input_ids, encoder_hidden_states）
-                let out_val = m
-                    .dec
-                    .run(ort::inputs![t_m, t_in, t_h])
-                    .map_err(|e| format!("decoder 推理失败：{e}"))?;
-                let (_, logits) = out_val[0]
-                    .try_extract_tensor::<f32>()
-                    .map_err(|e| format!("读取 decoder 输出失败：{e}"))?;
-
-                // 只关心最后一帧。[1, seq, VOCAB] 展平后最后 VOCAB 个数就是它
-                let start = (seq as usize - 1) * VOCAB;
-                if logits.len() < start + VOCAB {
-                    return Err(format!(
-                        "decoder 输出维度不符：len={} 期望至少 {}",
-                        logits.len(),
-                        start + VOCAB
-                    ));
-                }
-                let row = &logits[start..start + VOCAB];
-
-                let mut best = f32::NEG_INFINITY;
-                let mut best_id = EOS;
-                for (i, &v) in row.iter().enumerate() {
-                    // bad_words_ids = [[65000]]：pad 永远不该被生成
-                    if i as u32 == PAD {
-                        continue;
-                    }
-                    if v > best {
-                        best = v;
-                        best_id = i as u32;
-                    }
-                }
-
-                if best_id == EOS {
-                    break;
-                }
-                cur.push(best_id as i64);
-                out.push(best_id);
-            }
-
-            Ok(m.vocab.decode(&out))
-        })
+        with_model(|m| m.generate(&req.text, max_new, &mut Stats::default()))
     }
+}
+
+impl Model {
+    /// 编码 → 逐步解码 → 后处理。计时段写进 `st`。
+    fn generate(&mut self, text: &str, max_new: usize, st: &mut Stats) -> Result<String, String> {
+        let ids = self.vocab.encode(text);
+        if ids.is_empty() {
+            return Ok(String::new());
+        }
+        // 位置编码上限 512，留一个位置给末尾的 </s>
+        let len = ids.len().min(MAX_POS - 1);
+        let mut src: Vec<i64> = ids[..len].iter().map(|&x| x as i64).collect();
+        // Marian 要求源序列以 </s> 收尾，否则长句断句明显变差
+        src.push(EOS as i64);
+        let len = src.len();
+        let mask: Vec<i64> = vec![1; len];
+
+        let t_enc = std::time::Instant::now();
+        let t_ids = Tensor::from_array((vec![1i64, len as i64], src))
+            .map_err(|e| format!("构造 encoder 输入失败：{e}"))?;
+        let t_mask = Tensor::from_array((vec![1i64, len as i64], mask.clone()))
+            .map_err(|e| format!("构造 mask 失败：{e}"))?;
+
+        // 输入顺序取自模型定义（encoder: input_ids, attention_mask），
+        // 不能用名字传，rc.15 的 inputs! 只认位置。
+        let enc_out = self
+            .enc
+            .run(ort::inputs![t_ids, t_mask])
+            .map_err(|e| format!("encoder 推理失败：{e}"))?;
+        let (h_shape, hidden) = enc_out[0]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| format!("读取 encoder 输出失败：{e}"))?;
+        let hidden: Vec<f32> = hidden.to_vec();
+        // 用真实输出形状而不是硬编码 512，换模型时不会错位
+        let h_dims: Vec<i64> = h_shape.iter().map(|&d| d as i64).collect();
+        st.enc_ms = t_enc.elapsed().as_millis();
+
+        // 这两份输入每一步都要喂，建一次、借用多次。旧实现每步都
+        // clone 一遍 hidden，长句等于白拷 1 MB。
+        let t_mask = Tensor::from_array((vec![1i64, len as i64], mask))
+            .map_err(|e| format!("构造 decoder mask 失败：{e}"))?;
+        let t_h = Tensor::from_array((h_dims, hidden))
+            .map_err(|e| format!("构造 hidden 失败：{e}"))?;
+
+        // past 名按模型声明顺序收集，下标与缓存一一对应
+        let past_names: Vec<String> = self
+            .dec_inputs
+            .iter()
+            .filter(|n| n.starts_with("past_key_values."))
+            .cloned()
+            .collect();
+        // 第一步没有 past。merged decoder 的 24 个 past 输入不能省，而
+        // ONNX Runtime 的 Reshape 不接受 0 长度维（"The dimension with
+        // value zero exceeds..."），所以首步喂 seq=1 的零张量占位，
+        // 同时把 use_cache_branch 置假——那一路根本不读 past。
+        let mut cache: Vec<Past> = vec![
+            Past {
+                shape: vec![1, DEC_HEADS, 0, HEAD_DIM],
+                data: Vec::new(),
+            };
+            past_names.len()
+        ];
+
+        let t_dec = std::time::Instant::now();
+        let mut cur = PAD as i64;
+        let mut out: Vec<u32> = Vec::with_capacity(max_new);
+
+        for step in 0..max_new {
+            let t_step = std::time::Instant::now();
+
+            // 按名字喂而不是按位置拼数组：27 个输入里 24 个是 past，
+            // 有序数组一旦错位，模型不会报错，只会安静地输出垃圾
+            let mut feeds: Vec<(String, SessionInputValue)> =
+                Vec::with_capacity(self.dec_inputs.len());
+            for name in &self.dec_inputs {
+                let v: SessionInputValue = match name.as_str() {
+                    "input_ids" => SessionInputValue::from(
+                        Tensor::from_array((vec![1i64, 1i64], vec![cur]))
+                            .map_err(|e| format!("构造 decoder 输入失败：{e}"))?,
+                    ),
+                    "encoder_attention_mask" => SessionInputValue::from(t_mask.view()),
+                    "encoder_hidden_states" => SessionInputValue::from(t_h.view()),
+                    // merged 版靠这个布尔量在 If 节点里选分支：
+                    // 真 → 算完新 token 后 present = concat(past, new)
+                    // 假 → 完全忽略 past，重算整段
+                    // 只有首步需要"假"：cross-attention 的 K/V 必须在这一步
+                    // 由 encoder 输出算出来，之后才能走缓存。
+                    "use_cache_branch" => SessionInputValue::from(
+                        Tensor::from_array((vec![1i64], vec![step > 0]))
+                            .map_err(|e| format!("构造 use_cache_branch 失败：{e}"))?,
+                    ),
+                    n => {
+                        let i = past_names
+                            .iter()
+                            .position(|p| p == n)
+                            .ok_or_else(|| format!("decoder 出现未知输入：{n}"))?;
+                        let (shape, data) = (cache[i].shape.clone(), cache[i].data.clone());
+                        SessionInputValue::from(
+                            Tensor::from_array((shape, data))
+                                .map_err(|e| format!("构造 {n} 失败：{e}"))?,
+                        )
+                    }
+                };
+                feeds.push((name.clone(), v));
+            }
+
+            let outs = self
+                .dec
+                .run(feeds)
+                .map_err(|e| format!("decoder 第 {} 步推理失败：{e}", step + 1))?;
+
+            // 有 cache 之后每步只算一个位置，输出就是 [1, 1, VOCAB]
+            let logits = outs
+                .get("logits")
+                .ok_or_else(|| "decoder 没有 logits 输出".to_string())?;
+            let (_, logits) = logits
+                .try_extract_tensor::<f32>()
+                .map_err(|e| format!("读取 decoder 输出失败：{e}"))?;
+            if logits.len() < VOCAB {
+                return Err(format!(
+                    "decoder 输出维度不符：len={} 期望 {}",
+                    logits.len(),
+                    VOCAB
+                ));
+            }
+            let row = &logits[logits.len() - VOCAB..];
+
+            // present.N.* → 下一轮的 past_key_values.N.*
+            for (i, name) in past_names.iter().enumerate() {
+                // cross-attention 的 K/V 整段解码都不变（encoder 输出是固定的），
+                // 首步收下之后就再也不动。merged 导出在 cache 分支给出的
+                // present.*.encoder.* 形状是坏的（batch 维变 0），照收下一步必崩。
+                if step > 0 && name.contains(".encoder.") {
+                    continue;
+                }
+                let out_name = name.replacen("past_key_values.", "present.", 1);
+                let Some(v) = outs.get(&out_name) else {
+                    continue;
+                };
+                let (shape, data) = v
+                    .try_extract_tensor::<f32>()
+                    .map_err(|e| format!("读取 {out_name} 失败：{e}"))?;
+                let c = &mut cache[i];
+                c.shape = shape.iter().map(|&d| d as i64).collect();
+                // 复用已有分配：每步 new 一个 Vec 会让分配器成为热点
+                c.data.clear();
+                c.data.extend_from_slice(data);
+            }
+
+            let mut best = f32::NEG_INFINITY;
+            let mut best_id = EOS;
+            for (i, &v) in row.iter().enumerate() {
+                // bad_words_ids = [[65000]]：pad 永远不该被生成
+                if i as u32 == PAD {
+                    continue;
+                }
+                if v > best {
+                    best = v;
+                    best_id = i as u32;
+                }
+            }
+
+            if step == 0 {
+                st.first_step_ms = t_step.elapsed().as_millis();
+            }
+
+            if best_id == EOS {
+                break;
+            }
+            cur = best_id as i64;
+            out.push(best_id);
+        }
+
+        st.dec_ms = t_dec.elapsed().as_millis();
+        st.steps = out.len();
+
+        Ok(self.vocab.decode(&out))
+    }
+}
+
+/// 只给基准测试用：跑一次离线翻译并回报各阶段耗时。
+///
+/// 界面上的"按下到出结果"混着 HTTP、分段、缓存和渲染，看不出 decoder
+/// 本身快了多少；离线引擎的提速必须单独量。
+pub fn translate_probe(text: &str, max_new: usize) -> Result<(String, Stats), String> {
+    if !installed() {
+        return Err("模型未下载".into());
+    }
+    let mut st = Stats::default();
+    let t = with_model(|m| m.generate(text, max_new, &mut st))?;
+    Ok((t, st))
+}
+
+/// 打印 decoder 的输入输出签名。换模型版本时先看这个再改代码，
+/// 比按文档猜形状快——merged 版就多出一个 `use_cache_branch`。
+pub fn dump_io() -> Result<String, String> {
+    use ort::value::ValueType;
+    use std::fmt::Write as _;
+
+    with_model(|m| {
+        let mut s = String::new();
+        for o in m.dec.inputs() {
+            match o.dtype() {
+                ValueType::Tensor { shape, .. } => {
+                    let _ = writeln!(s, "IN  {:<44} {shape}", o.name());
+                }
+                other => {
+                    let _ = writeln!(s, "IN  {:<44} {other:?}", o.name());
+                }
+            }
+        }
+        for o in m.dec.outputs() {
+            if let ValueType::Tensor { shape, .. } = o.dtype() {
+                let _ = writeln!(s, "OUT {:<44} {shape}", o.name());
+            }
+        }
+        Ok(s)
+    })
 }
 
 /// 面板销毁时释放模型，把一百多 MB 还给系统。
@@ -511,6 +698,11 @@ pub fn unload() {
 
 /// 要从镜像拉的两个 ONNX。词表不打这里——它只有 1.8 MB 且和模型版本绑死，
 /// 随安装包分发（见 `ensure_vocab`），用户点下载时只付模型的体积。
+///
+/// decoder 必须是 **merged** 版：它把"首步无 cache"和"后续步带 cache"
+/// 两条路径合进一个图，输入里带 24 个 past_key_values。普通
+/// `decoder_model_quantized.onnx` 只有全序列重算一条路，每步都要
+/// 把整段前缀重跑一遍（实测 ~20 ms/step，与长度线性相关）。
 const FILES: &[(&str, &str, u64)] = &[
     (
         "encoder.onnx",
@@ -519,7 +711,7 @@ const FILES: &[(&str, &str, u64)] = &[
     ),
     (
         "decoder.onnx",
-        "https://hf-mirror.com/Xenova/opus-mt-en-zh/resolve/main/onnx/decoder_model_quantized.onnx",
+        "https://hf-mirror.com/Xenova/opus-mt-en-zh/resolve/main/onnx/decoder_model_merged_quantized.onnx",
         60_212_804,
     ),
 ];
@@ -573,6 +765,12 @@ pub fn download(app: &tauri::AppHandle) -> Result<(), String> {
     let mut overall = 0u64;
 
     for (name, url, total) in FILES {
+        // 已经下好的不重下：换 decoder 版本时没必要重拉 52 MB 的 encoder
+        if file_ok(&dir.join(name), total * 95 / 100) {
+            overall += *total;
+            continue;
+        }
+
         let part = dir.join(format!("{name}.part"));
         let resp = dl.get(url).call().map_err(|e| super::describe_http_err(e))?;
         let mut reader = resp.into_reader();
@@ -639,4 +837,31 @@ pub fn download(app: &tauri::AppHandle) -> Result<(), String> {
     // 换模型后旧 Session 必须丢掉，否则还在用上一份文件
     unload();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn polish_drops_space_before_turned_fullwidth_punct() {
+        // 模型常输出 "吗 ?"（半角问号前带空格）。若只做全角替换，
+        // 会留下"吗 ？"——两侧都有空的全角标点
+        assert_eq!(polish("关闭前保存更改吗 ?"), "关闭前保存更改吗？");
+        assert_eq!(polish("连接失败 , 请重试"), "连接失败，请重试");
+    }
+
+    #[test]
+    fn polish_keeps_latin_spacing() {
+        // 含中文但夹着英文短语时，英文之间的空格不能删
+        assert_eq!(polish("打开 settings 面板"), "打开 settings 面板");
+        // 纯英文原样返回（只 trim）
+        assert_eq!(polish("  Save changes?  "), "Save changes?");
+    }
+
+    #[test]
+    fn polish_never_leaves_space_after_fullwidth_punct() {
+        assert_eq!(polish("你好。 世界"), "你好。世界");
+        assert_eq!(polish("完成！  继续"), "完成！继续");
+    }
 }

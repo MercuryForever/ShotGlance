@@ -1032,6 +1032,82 @@ fn mt_self_test(app: &AppHandle) -> std::path::PathBuf {
     path
 }
 
+/// 离线解码基准：只跑 offline 引擎，每句跑 4 次取最小值。
+///
+/// 存在的理由：KV cache 这类改动的收益只有单独量才看得见。界面上的
+/// "按下到出结果"混着分段、缓存和渲染；在线引擎还会引入网络抖动。
+/// 这里固定文本、固定步数上限，输出 encoder / decoder / 首步三段耗时。
+fn mt_bench() -> std::path::PathBuf {
+    use std::fmt::Write as _;
+
+    let probes = [
+        ("short", "Save changes before closing?"),
+        (
+            "mid",
+            "Failed to connect to the server. Please check your network settings.",
+        ),
+        (
+            "long",
+            "The application could not complete the requested operation because the \
+             network connection was interrupted. Please verify your proxy configuration \
+             and try again later.",
+        ),
+    ];
+
+    let mut out = String::new();
+    let st = mt::offline::status();
+    let _ = writeln!(out, "installed={} dir={}", st.installed, st.dir);
+    if let Ok(sig) = mt::offline::dump_io() {
+        out.push_str(&sig);
+    }
+    let _ = writeln!(out, "cols=text enc_ms dec_ms first_ms steps total_ms ms_per_step");
+
+    for (tag, text) in probes {
+        // 第一次要装载模型，单独预热，不计入
+        if let Err(e) = mt::offline::translate_probe(text, 96) {
+            let _ = writeln!(out, "{tag}\tERR\t{e}");
+            continue;
+        }
+
+        let (mut best_enc, mut best_dec, mut best_first, mut best_total) =
+            (u128::MAX, u128::MAX, u128::MAX, u128::MAX);
+        let mut steps = 0usize;
+        let mut got = String::new();
+        for _ in 0..4 {
+            let t = std::time::Instant::now();
+            match mt::offline::translate_probe(text, 96) {
+                Ok((text_out, s)) => {
+                    got = text_out;
+                    steps = s.steps;
+                    best_enc = best_enc.min(s.enc_ms);
+                    best_dec = best_dec.min(s.dec_ms);
+                    best_first = best_first.min(s.first_step_ms);
+                    best_total = best_total.min(t.elapsed().as_millis());
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "{tag}\tERR\t{e}");
+                    break;
+                }
+            }
+        }
+
+        let per = if steps > 0 {
+            best_dec as f64 / steps as f64
+        } else {
+            0.0
+        };
+        let _ = writeln!(
+            out,
+            "{tag}\t{best_enc}\t{best_dec}\t{best_first}\t{steps}\t{best_total}\t{per:.1}\t{}",
+            got.replace('\n', " ⏎ ")
+        );
+    }
+
+    let path = std::env::temp_dir().join("shotglance-mt-bench.txt");
+    let _ = std::fs::write(&path, out);
+    path
+}
+
 /// 无界面 OCR 自检：采集 → 识别 → 结果落盘，然后退出。
 ///
 /// 识别正确率与时延都必须在真机上量，而"打开窗口点按钮"没法进 CI。
@@ -1160,6 +1236,13 @@ pub fn run() {
             // 随包词表铺到模型目录。应用内下载和"用户自己拷两个 onnx 进来"
             // 两条路都依赖它先就位。
             let _ = mt::offline::ensure_vocab(app.handle());
+
+            // 离线解码基准：只跑本地模型，量 decoder 每步耗时。
+            if std::env::var_os("SHOTGLANCE_MT_BENCH").is_some() {
+                let path = mt_bench();
+                println!("mt bench written to {}", path.display());
+                std::process::exit(0);
+            }
 
             // 无界面翻译自检：逐引擎试一句，落盘后退出。
             if std::env::var_os("SHOTGLANCE_MT_SELFTEST").is_some() {
