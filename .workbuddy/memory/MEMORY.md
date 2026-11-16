@@ -10,7 +10,7 @@
 ## 当前进度（2026-11-13 17:34，提交 `6f187df`）
 **已实现**：托盘 + 按需建窗 + 空闲回收｜全局热键｜xcap/WGC 截屏｜PP-OCRv4 检测识别｜引擎按需加载/卸载｜NSIS 离线打包｜区域框选｜翻译层（5 引擎 + auto 竞速 + 离线 Opus-MT）｜**译文悬浮层 + 框选后自动翻译**。
 **实测**：装包 21.89 MiB｜托盘 11.5 MB｜回收后 32.9 MB｜OCR 加载 152.7 MB｜截图 130 ms｜基准图 8/8 行 242 ms｜全屏 83 行 811 ms｜翻译 auto 613–1243 ms、离线 667–766 ms。
-**剩余路线**：离线解码提速（merged decoder + KV cache）→ 识别小批优化。
+**剩余路线**：~~离线解码提速（merged decoder + KV cache）~~ ✅ 2026-11-16 完成（详 §1.4，结论：短句 1.2×、80 token 1.6×，瓶颈是每 token 33M MAC 的 65001 路输出投影，与原估 3–5× 不符）→ 识别小批优化。
 **待真机复看**：框选遮罩在 VM 里重绘异常。
 
 ## 换机落地（2026-11-16，当前这台机器已完全就绪）
@@ -60,6 +60,8 @@ Win11 22621｜Rust 1.99.1 stable-**msvc**（无需 `+crt-static`，默认已静�
 - **auto = 对冲竞速**：首个引擎立刻发，之后每 250 ms 补一个，先返回者胜；全挂再串行落离线。不是串行降级——本机 googleapis 不通，串行每次卡 5 s 超时。
 - **失败熔断 90 s**：auto 链跳过失败过的在线引擎；用户显式指定时不跳。
 - **贪婪解码**，不用 beam=4（慢 4 倍，长文本质量差别很小）。
+- **merged decoder + KV cache（2026-11-16）**：每步只算 1 个新 token，历史留在 24 个 past 张量里。三个坑：①`use_cache_branch` 首步假、之后真；②past 不能用 0 长度维（ORT Reshape 报 zero exceeds），首步喂 `[1,8,0,64]` 空张量 + 分支置假，别塞零值占位；③cache 分支的 `present.*.encoder.*` 形状坏 `[0,8,1,64]`，encoder 侧 K/V 只收首步、之后不更新。收益看长度：8/13/26/50/80 token = 1.18/1.22/1.26/1.45/1.63×——每步固定 ~15 ms 被输出投影吃掉，KV cache 只能消掉平方项。线程数 4 已饱和（1/2/4/8/20 = 20.8/17.4/17.2/17.0/23.2 ms/步）。
+- **模型文件在本机就绪**（2026-11-16）：`encoder.onnx` 52,899,742 B + merged `decoder.onnx` 60,212,804 B + `tokens.tsv`，从 `hf-mirror.com/Xenova/opus-mt-en-zh` 拉的；`download()` 现在会跳过已完整文件。
 - **自实现 SentencePiece**：不引 sentencepiece（要 cmake 编 C++）也不引 tokenizers（缺 tokenizer.json）。构建期把 spm 分数 + vocab.json id 合成 `tokens.tsv`，运行时只跑 Unigram Viterbi。
 
 ## 不可回退的技术决策
