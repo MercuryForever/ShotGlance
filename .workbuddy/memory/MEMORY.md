@@ -13,14 +13,25 @@
 **剩余路线**：离线解码提速（merged decoder + KV cache）→ 识别小批优化。
 **待真机复看**：框选遮罩在 VM 里重绘异常。
 
+## 换机落地（2026-11-16，当前这台机器已完全就绪）
+第三次换机完成，工作区 `C:\Users\Administrator\Downloads\1113-2`（扁平单层，仓库根 = 工作区根，工程在 `shotglance/`）。
+提交 `15c5213`（= `6f187df` + 记忆文件更新）。冷缓存实测：`cargo check` 3m20s、`cargo build` 3m12s、
+`npm run tauri:build` **5m57s → 21.87 MiB**、`cargo test --lib` 5 passed、`tsc --noEmit` 0 错。
+`target` 全部重建（本次未迁移），路径不再需要与旧机一致。两条 tar 已还原：registry 747 文件、node_modules 455 文件 / 62 MB。
+
 ## 构建基线（2026-11-13 实测，本机已完全就绪）
 `cargo check` 增量 0.84–1.15 s｜`cargo build`(debug) 76.3 s｜release 1m10s–2m44s｜`npm run tauri:build` **93–96 s** → 21.89 MiB 安装包，归档 `shotglance/release/`。
 `cargo test --lib` 5 passed｜`tsc --noEmit` 0 错。
 装包体积由 `src-tauri/Cargo.toml` 的 opt-level="z" + lto 控制，加体积前先算红线。
 
 ## 环境基线
-Win11 22621｜Rust 1.99.1 stable-**msvc**（无需 `+crt-static`，默认已静态链 vcruntime）｜MSVC **14.44.35207**（`Program Files (x86)\Microsoft Visual Studio\2022\BuildTools`）｜WinSDK **10.0.22621.0 + 10.0.26100.0**｜Node 22.22.2｜WebView2 152｜NSIS 3.13（部署在 `%LOCALAPPDATA%\tauri\NSIS`，原包 `scripts/vendor/`，`setup-nsis-cache.ps1` 可一键铺平）。
+Win11 22621｜Rust 1.99.1 stable-**msvc**（无需 `+crt-static`，默认已静态链 vcruntime）｜MSVC **14.44.35207**（`Program Files (x86)\Microsoft Visual Studio\2022\BuildTools`，本机 BuildTools **17.14.45**）｜WinSDK **10.0.22621.0 + 10.0.26100.0**｜Node 22.22.2｜WebView2 152→**本机 157.0.4341.46**｜NSIS 3.13（部署在 `%LOCALAPPDATA%\tauri\NSIS`，原包 `scripts/vendor/`，`setup-nsis-cache.ps1` 可一键铺平）。
 `verify-env.ps1` 仅剩 Python 3.10/3.11 一项 FAIL（只"模型导出"用，不影响构建）。
+
+本机额外事实（2026-11-16）：`cargo`/`rustc` 在 `C:\Users\Administrator\.cargo\bin`（已写用户 PATH）；Node 与 npm 用托管版
+`C:\Users\Administrator\.workbuddy\binaries\node\versions\22.22.2-2`（**不在系统 PATH**，跑 npm 要手动加）；
+`C:\Users\Administrator\.cargo\registry` 已还原（离线可编）。给 cargo 传 `--offline` / `CARGO_NET_OFFLINE=true` 可避免联网更新索引。
+
 
 ## 架构要点
 
@@ -99,6 +110,20 @@ Win11 22621｜Rust 1.99.1 stable-**msvc**（无需 `+crt-static`，默认已静�
 - 给 Rust 传路径必须 `cygpath -w`（`/tmp/x` 会落到 `C:\tmp`）。
 - 量内存必须**按 PID 差集 + 轮询**：WebView2 子进程退出要 4–8 s；xcap 的 D3D 缓存 +42 MB 是一次性非泄漏。
 - 沙箱限制：`rm -rf` / `sed -i` 被拦；回收站也做不到（`Add-Type` 载 Microsoft.VisualBasic、`New-Object -ComObject Shell.Application` 均被拒）→ "删除"退化为 `Move-Item` 到 `%TEMP%`。清目录用 `robocopy <空目录> <目标> /MIR`；删超长路径用 `[IO.Directory]::Delete('\\?\'+$p,$true)`。
+
+- **VS 引导器撞代理键（新，2026-11-16）**：`http_proxy` 与 `HTTP_PROXY` 同时存在 → 引导器往大小写不敏感的字典里塞，报
+  `0x80070057 Couldn't launch setup process / 已添加项。字典中的关键字:"HTTP_PROXY"`，外层 exit 138、Watson P7=5002。
+  **不是**文档里那个 502，清空变量也治不好，必须 `env -u` 把 8 个变量**全 unset** 再跑。装完 exit **194** 也可能已完整（本机就是），
+  别拿 194 当失败，直接查 `VC\Tools\MSVC`、`Windows Kits\10\Include`、`cl.exe`。另外 `static.rust-lang.org` 直连解析不了（只能走代理），
+  `download.visualstudio.microsoft.com` 直连正常（要无代理），两者诉求相反，得分开跑。
+- **`core.autocrlf=true` 会毁掉文本资产（新，2026-11-16）**：PortableGit 全局默认 true，`git reset --hard` 后 `dict.txt` 26250→32873 B、
+  `tokens.tsv` 1867691→1932692 B（差值=行数），OCR 字典每行多 `\r`、SentencePiece 末列被污染。换机后**先 `git config core.autocrlf false`**
+  再 `git rm --cached -r . && git reset --hard`，然后按 `README` 的 SHA 表逐个核 5 个资产。
+- **bundle 的仓库根是工作区根，不是 `shotglance/`（新，2026-11-16）**：先在工程目录 `git init` 会写出嵌套 `shotglance/shotglance/`
+  并覆盖工程 `README.md`。正确做法：在**工作区根** `git init` + `git fetch --update-head-ok <bundle> "refs/heads/*:refs/heads/*"` + `git reset --hard master`
+  （不带 `--update-head-ok` 会被 `refusing to fetch into branch` 拒掉，因为 init 已检出 unborn `master`）。
+- **`SHA256SUMS.txt` 是 CRLF**：`sha256sum -c` 报 `'文件'$'\r': No such file or directory`，先 `sed 's/\r$//'` 再校验。
+- **`npm run tauri:build` 会去 `go.microsoft.com` 拉 WebView2 引导器**（本机实测有这一步），不是只有 NSIS 一个外网依赖。
 
 ## 待用户拍板
 - 是否上 macOS / Linux（macOS 需屏幕录制授权，Linux 无法完全自包含）
