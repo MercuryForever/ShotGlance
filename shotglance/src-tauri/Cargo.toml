@@ -1,6 +1,6 @@
 [package]
 name = "shotglance"
-version = "1.0.0"
+version = "1.0.1"
 description = "ShotGlance - screenshot, OCR, translate, overlay"
 edition = "2021"
 rust-version = "1.77"
@@ -44,6 +44,16 @@ ureq = { version = "2.12", default-features = false, features = [
   "native-tls",
   "gzip",
   "json",
+] }
+
+# 单实例保护（命名互斥体 + 命名事件，见 src/single_instance.rs）。
+# 选 windows-sys 而不是 tauri-plugin-single-instance：后者要多下一个 crate，
+# 而交付包的离线 registry 快照里没有它；windows-sys 本来就是 tauri 的
+# 传递依赖（0.59.0 已在 Cargo.lock 里），新增的只是"直接声明 + 打开 feature"。
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_Threading",
 ] }
 
 [profile.release]

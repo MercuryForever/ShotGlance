@@ -34,7 +34,7 @@ npm run tauri:dev      # 热重载，改前端秒级生效
 .\build.ps1 -Clean             # 先清空 build\dist 与 build\target
 ```
 
-产物位置：`..\build\target\release\bundle\nsis\ShotGlance_1.0.0_x64-setup.exe`（21.89 MiB），
+产物位置：`..\build\target\release\bundle\nsis\ShotGlance_1.0.1_x64-setup.exe`（21.89 MiB），
 并被归档到 `..\build\release\`。手工等价命令：
 
 ```
@@ -131,6 +131,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\restore-nsis-cache.ps1
 | 触发 | 行为 |
 |---|---|
 | 双击 exe / 启动应用 | 建窗并显示（启动窗，**不受空闲回收影响**） |
+| 再双击一次 exe（已有实例在跑） | 第二个进程**立刻退出**，第一个实例把面板前置/唤回 |
 | `Ctrl+Shift+S` | 建窗（已存在则前置复用） |
 | 托盘左键单击 / 双击 | 打开或前置面板，**不切换**（窗口在前台时点了不会把它关掉） |
 | 托盘右键 | 菜单：显示 / 隐藏面板、退出 |
@@ -153,6 +154,37 @@ powershell -ExecutionPolicy Bypass -File .\scripts\restore-nsis-cache.ps1
 **图标必须显式传进 `TrayIconBuilder::icon()`**。不传时 `tray-icon` 会把 `hIcon`
 设成 null，Windows 上就是一个空白占位块——托盘区占着位置但什么都看不见，很容易
 被误判成"托盘没注册成功"。用 PNG 而不是 `icon.ico`：这条链路吃 RGBA，ico 还得再解码一次。
+
+### 单实例
+
+托盘常驻 + 全局热键的程序**必须**做单实例，否则重复双击会出现两个托盘图标、
+两份 WebView2、两份 ONNX 会话；更麻烦的是全局热键只有先到的那个注册成功，
+而用户点到的往往是后起的那个——按 `Ctrl+Shift+S` 毫无反应，看起来就是"软件坏了"。
+两个实例还会同时读写同一份 `%APPDATA%\ShotGlance\`（配置、模型下载），能写出半截文件。
+
+实现见 `src-tauri/src/single_instance.rs`，只用两个内核对象：
+
+| 对象 | 名字 | 用途 |
+|---|---|---|
+| 命名互斥体 | `Local\ShotGlance.SingleInstance.Mutex.v1` | `claim()` 在建窗前创建，`ERROR_ALREADY_EXISTS` 即判定"已有一个在跑" |
+| 命名事件（auto-reset） | `Local\ShotGlance.SingleInstance.Event.v1` | 第二个进程 `SetEvent` 后退出；首实例的监听线程被唤醒，回主线程 `open_panel()` |
+
+三个设计要点：
+
+1. **都在 `Local\` 命名空间**（而非 `Global\`）：作用域是当前登录会话。同一台机器
+   两个 Windows 用户、或两个 RDP 会话各跑一个实例是合理的，用 `Global\` 会互相踢掉。
+2. **首实例顺手就把唤回事件建出来**，不等到 `setup`：中间那段空窗期用户再双击一次的话，
+   第二个进程 `SetEvent` 会落空。auto-reset 事件会把"已触发"保留到有人 `wait`，所以不丢信号。
+3. **互斥体句柄故意不关**（进程退出时内核回收）：它活着"这个名字被占用"才成立。
+
+为什么不用 `tauri-plugin-single-instance`：它要多下一个 crate，而交付包的离线
+`cargo-registry.tar` 快照里没有，换机器恢复时会卡住；`windows-sys` 本来就是 tauri 的
+传递依赖，只是升为直接依赖并打开 3 个 feature。
+
+**自检/取证进程豁免**：带 `SHOTGLANCE_SELF_TEST` / `SHOTGLANCE_OCR_SELFTEST` /
+`SHOTGLANCE_MT_SELFTEST` / `SHOTGLANCE_MT_BENCH` / `SHOTGLANCE_AUTO_OCR` /
+`SHOTGLANCE_AUTO_OVERLAY` 的进程不参与单实例判定。不豁免的话，托盘实例开着时跑脚本
+会被判成第二实例、直接退出——退出码 0 且没有任何输出，排查起来极费劲。
 
 为什么必须 destroy 而不是 hide：窗口"隐藏"时 WebView2 的子进程照常存活，
 内存一分不省。实测数据（`scripts/measure-memory.ps1`）：

@@ -15,8 +15,8 @@ npm ci
 npm run tauri:build          # 需要 PATH 里有 cargo
 ```
 
-产物 `..\build\target\release\bundle\nsis\ShotGlance_1.0.0_x64-setup.exe`（22 MB），并归档到 `..\build\release\`。
-不想装工具链就直接跑快照里的 `release\ShotGlance_1.0.0_x64-setup.exe`。
+产物 `..\build\target\release\bundle\nsis\ShotGlance_1.0.1_x64-setup.exe`（22 MB），并归档到 `..\build\release\`。
+不想装工具链就直接跑快照里的 `release\ShotGlance_1.0.1_x64-setup.exe`。
 （v1.0.0 起编译产物统一在仓库根构建区 `build/`，源码树里不再有 `target/` 与 `dist/`。）
 
 ---
@@ -301,7 +301,7 @@ Rust 工具链只需 `stable-msvc`，**不需要** nightly、不需要 `+crt-sta
 | 脚本 | `scripts/{measure-memory,restore-nsis-cache,make-ocr-sample,export-snapshot}.ps1`、`scripts/gen_icon.py`、`scripts/mt/{ref,cmp,export_vocab,merge_vocab,bench_decode,profile_ops,probe_lmhead,probe_pattern,transform_lmhead,verify_lmhead}.py` + `scripts/mt/README.md`、`scripts/vendor/`（NSIS 3.13 + 插件 dll） | 2.4 MB | NSIS vendor 与 mt 转换脚本都是"重建很贵"的东西，必须带 |
 | 基准 | `src-tauri/tests/ocr-sample.png` | 24 KB | OCR 可复现验证图 |
 | 文档 | `README.md`、本文件、`.workbuddy/memory/*` | 90 KB | 决策依据 + 踩坑记录 + 记忆 |
-| 成品（可选） | `release/ShotGlance_1.0.0_x64-setup.exe`（快照内路径，源自仓库根 `build/release/`） | 22 MB | 不想装工具链时直接安装。`-NoInstaller` 可跳过 |
+| 成品（可选） | `release/ShotGlance_1.0.1_x64-setup.exe`（快照内路径，源自仓库根 `build/release/`） | 22 MB | 不想装工具链时直接安装。`-NoInstaller` 可跳过 |
 
 **离线翻译模型（113 MB）不在快照里**，也不该在：它只对选了离线引擎的用户有价值，放进去会把 45 MB 变成 160 MB。
 首次使用在应用内下载到 `%APPDATA%\ShotGlance\models\opus-mt-en-zh\`，或者从旧机器直接拷这个目录。

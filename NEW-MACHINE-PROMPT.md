@@ -13,7 +13,7 @@
 
 - `shotglance-code.zip` — 代码 HEAD 快照，含 `.workbuddy/memory/` 全部记忆
 - `shotglance-history.bundle` — 完整 git 历史（5 个提交）
-- `ShotGlance_1.0.0_x64-setup.exe` — 成品安装包 21.89 MiB（v1.0.0，仓库根构建区 `build/release/` 的归档副本）
+- `ShotGlance_1.0.1_x64-setup.exe` — 成品安装包 21.89 MiB（v1.0.1，仓库根构建区 `build/release/` 的归档副本）
 - `cargo-registry.tar`（crate 缓存 + index）、`node_modules.tar`（前端依赖）
 - `SHA256SUMS.txt`
 
@@ -96,4 +96,4 @@ Stop-Process -Name BackgroundDownload -Force -ErrorAction SilentlyContinue
 - 某步失败时，先把报错原文和你对根因的判断告我，不要反复重试同一条命令。
 - 这个仓库有 git 历史，后续每次改动都要提交。`.gitignore` 用一条 `/build/` 挡住整个构建区，另有 `env-bundle/`、`node_modules/`、快照 zip。
 - 旧方案 `env-bundle/` 和 `scripts/restore-env-bundle.ps1` 本次不适用（包里也没有 `env-bundle`），不要拿它恢复环境。
-- 如果暂时只想验证工具能不能用、不急着构建：直接双击 `M\ShotGlance_1.0.0_x64-setup.exe` 安装即可，不装编译环境也能跑。
+- 如果暂时只想验证工具能不能用、不急着构建：直接双击 `M\ShotGlance_1.0.1_x64-setup.exe` 安装即可，不装编译环境也能跑。

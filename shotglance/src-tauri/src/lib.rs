@@ -12,6 +12,7 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 
 mod capture;
 mod ocr;
+mod single_instance;
 
 // 目录叫 translate，模块却叫 mt：lib.rs 里有个 `#[tauri::command] fn translate`，
 // Rust 的路径解析碰到同名模块时会把 `translate::run` 当成函数调用，直接编译失败。
@@ -1245,6 +1246,16 @@ fn ocr_self_test() -> std::path::PathBuf {
 }
 
 pub fn run() {
+    // 单实例闸门，必须排在建窗 / 建托盘 / 注册热键之前。
+    //
+    // 不做的话用户双击两次就有两个托盘图标、两份 WebView2 和 ONNX 会话，
+    // 而全局热键只有先到的那个注册成功——用户点到的往往是后起的那个，
+    // 按 Ctrl+Shift+S 毫无反应，看起来就是"软件坏了"。
+    // 第二个进程在这里就把第一个叫到前台，然后自己安静退出。
+    if single_instance::claim() == single_instance::Role::Secondary {
+        return;
+    }
+
     let builder = tauri::Builder::default()
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -1338,6 +1349,11 @@ pub fn run() {
                 Ordering::Relaxed,
             );
             spawn_idle_watchdog(app.handle().clone());
+
+            // 单实例"唤回"监听：用户再次双击图标时，起一个线程收到信号
+            // 就回主线程开面板（open_panel 自带复用/退悬浮/前置）。
+            // 非首实例在这里什么也不做——它们早在 claim() 就退出了。
+            single_instance::listen(app.handle().clone());
 
             // 启动即显示主窗口：v0.1 是"纯托盘常驻"，用户装完看不到任何界面，
             // 得先知道热键或去托盘点一下——第一印象就是"这软件是不是没启动"。

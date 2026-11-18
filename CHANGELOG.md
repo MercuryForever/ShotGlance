@@ -3,6 +3,55 @@
 本项目的所有重要变更都记录在这里。版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)，
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [1.0.1] — 2026-11-18
+
+修复一个真机上必然踩到的问题：**应用可以被重复启动，多个实例同时驻留**。
+体积 22,950,001 → **22,950,359 B**（+358 B，仍是 21.89 MiB）；Rust 单测 8 → **11 passed**。
+
+### 修复
+
+- **单实例保护**（新增 `src-tauri/src/single_instance.rs`，约 200 行含注释）。
+  第二个进程在 `tauri::Builder` 之前就被拦下：`CreateMutexW` 拿到 `ERROR_ALREADY_EXISTS`
+  即判定"已有一个在跑"，`SetEvent` 通知首实例后 `exit 0`——不建窗、不建托盘、不注册热键。
+  首实例的监听线程收到信号，通过 `run_on_main_thread` 调 `open_panel()`，
+  自动完成"退出悬浮形态 → 还原几何 → 前置"。
+
+  修复前的实际症状：连点两次图标就有两个托盘图标、两份 WebView2 与 ONNX 会话；
+  全局热键只有先到的那个注册成功（第二个在建窗时打印
+  `全局热键注册失败: HotKey already registered`），而用户点到的往往是后起的那个，
+  按 `Ctrl+Shift+S` 毫无反应，看起来就是"软件坏了"。两个实例还会同时写
+  `%APPDATA%\ShotGlance\` 下的配置与模型下载，能写出半截文件。
+
+- **内核对象放在 `Local\` 命名空间**：作用域是当前登录会话。同一台机器两个 Windows 用户、
+  或两个 RDP 会话各跑一个实例是合理的，用 `Global\` 会把对方踢掉。
+- **首实例在建窗之前就把唤回事件建好**（`claim()` 里，不等到 `setup`）：
+  否则用户"启动过程中再双击一次"时第二个进程 `SetEvent` 会落空。
+  事件是 auto-reset，所以信号会一直留到有人 `wait`，不会丢。
+- **自检/取证进程豁免**：`SHOTGLANCE_SELF_TEST` / `SHOTGLANCE_OCR_SELFTEST` /
+  `SHOTGLANCE_MT_SELFTEST` / `SHOTGLANCE_MT_BENCH` / `SHOTGLANCE_AUTO_OCR` /
+  `SHOTGLANCE_AUTO_OVERLAY` 不参与单实例判定。不豁免的话，托盘实例开着时跑脚本会被判成
+  第二实例、静默退出（退出码 0、无任何输出），排查成本极高。
+
+### 依赖
+
+- 新增直接依赖 `windows-sys 0.59`（`Win32_Foundation` / `Win32_Security` / `Win32_System_Threading`）。
+  没有引 `tauri-plugin-single-instance`：它要求联网补 crate，而交付包的离线
+  `cargo-registry.tar` 快照里没有；`windows-sys` 本来就是 tauri 的传递依赖（已在 `Cargo.lock`）。
+
+### 实测
+
+| 项 | 结果 |
+|---|---|
+| 首实例纯托盘（`SHOTGLANCE_NO_PANEL=1`） | 1 进程 / 12,424 K / 无窗口 |
+| 再启动一次 | 退出码 **0**、**564 ms** 退出、输出"已有实例在运行，已请求它前置面板" |
+| 唤回后 | 仍 **1 进程**（同一 PID）、67,028 K、窗口标题 `ShotGlance` |
+| 自检豁免 | 托盘实例在跑时 `SHOTGLANCE_SELF_TEST=1` 正常产出文件，进程数不变 |
+
+### 版本
+
+- 1.0.0 → **1.0.1**（`package.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json`），
+  安装包 `ShotGlance_1.0.1_x64-setup.exe`。
+
 ## [1.0.0] — 2026-11-18
 
 首个对外发布版。在 0.1.0 之上补齐三项体验改动，并把仓库拆成「Git 区 / 构建区」两个互不干扰的区域。

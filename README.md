@@ -2,8 +2,9 @@
 
 截图 → OCR → 翻译 → 悬浮回显的轻量 Windows 桌面工具。
 **Rust + Tauri 2**，纯托盘常驻，`Ctrl+Shift+S` 框选，译文卡片贴回原位置。
+单实例运行：重复启动不会多开，第二个进程会把你已有的窗口叫到前面然后自己退出。
 
-| 指标 | 目标 | v1.0.0 实测 |
+| 指标 | 目标 | v1.0.1 实测 |
 |---|---|---|
 | 安装包 | < 150 MB | **21.89 MiB** |
 | 空闲内存（托盘） | < 80 MB | 11.5 MB |
@@ -45,7 +46,7 @@ shotglance/                        ← 仓库根 = Git 区边界
    └─ build/
       ├─ dist/                    vite 前端产物（index.html + assets/*.js|css）
       ├─ target/                  cargo 编译输出
-      │  └─ release/bundle/nsis/   ShotGlance_1.0.0_x64-setup.exe（原始产物）
+      │  └─ release/bundle/nsis/   ShotGlance_1.0.1_x64-setup.exe（原始产物）
       ├─ release/                 归档的安装包（清掉 target 后成品仍在）
       └─ logs/                    构建转录（build-YYYYMMDD-HHmmss.log）
 ```
@@ -104,7 +105,7 @@ tauri 会把 ACL / capability 的生成结果写到 `src-tauri/gen/`，路径由
 cd shotglance
 npm ci
 npm run tauri:build
-# 产物: ..\build\target\release\bundle\nsis\ShotGlance_1.0.0_x64-setup.exe
+# 产物: ..\build\target\release\bundle\nsis\ShotGlance_1.0.1_x64-setup.exe
 ```
 
 **前置条件**：Rust 1.99+ (msvc)、Node 22、MSVC BuildTools + Windows SDK、NSIS 3.13（脚本可离线恢复）。
