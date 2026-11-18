@@ -28,7 +28,7 @@ npm run tauri:dev      # 热重载，改前端秒级生效
 ```bash
 set PATH=%USERPROFILE%\.cargo\bin;%PATH%   # tauri CLI 需要能找到 cargo
 npm run tauri:build
-# 产物: src-tauri/target/release/bundle/nsis/ShotGlance_0.1.0_x64-setup.exe（21.91 MiB）
+# 产物: src-tauri/target/release/bundle/nsis/ShotGlance_0.1.0_x64-setup.exe（21.88 MiB）
 ```
 
 > **只跑 `cargo build --release` 会得到一个「开发模式」的 exe**：Tauri 2 用
@@ -325,4 +325,36 @@ scripts/
 - [x] 翻译层：5 引擎可切换 + auto 对冲竞速 + 离线 Opus-MT（详见 HANDOFF §1.2）
 - [x] 译文悬浮层（复用面板窗口变形为无边框置顶卡片，贴原文框下方，详见 HANDOFF §1.3）
 - [x] OCR 后自动翻译（框选松手即出译文；设置里可关，避免按量计费引擎产生意外费用）
-- [ ] 离线解码提速（merged decoder + KV cache，预计快 3–5 倍）
+- [x] 离线解码提速（merged decoder + KV cache → 1.2–1.6×；词表投影 int8 化 → 单步 14.84 → 2.37 ms，
+      累计 **6.1–6.8×**，详见 HANDOFF §1.5）
+
+## 已知限制
+
+分两类：**主动不做的优化**（已判定收益低于风险，别再纠结）和**使用前提**（不满足就用不了）。
+
+### 一、主动不做的三条技术债
+
+| # | 限制 | 现状 | 为什么不做 |
+|---|---|---|---|
+| 1 | **识别仍是逐行推理，没有小批优化** | 约 8.4 ms/行；1000×560 的 8 行图 161 ms，2560×1440 全屏 83 行 699 ms | 逐行是为了不把短行 padding 到最长行白算。区域框选落地后「整屏 83 行」不常见，收益变小。缓解办法就是**用框选，别整屏识别** |
+| 2 | **Decoder 布局算子未收敛** | 单步 2.37 ms 里，`Concat`（109 次）2.6 ms/整句、`Reshape`（98 次）1.9 ms/整句，布局类算子占三成 | 理论收益两位数百分比，但译文已经 25–80 ms（目标 500 ms），用户感知为零；改 ONNX 图结构要动 `If` 子图与拓扑序，改造时已踩两个坑，风险大于收益 |
+| 3 | **悬浮卡片是直角方卡，没有圆角/投影** | 视觉上比系统原生 tooltip 硬一些 | Tauri 下要圆角必须 `transparent(true)`（Windows 上会丢掉部分 DWM 优化）或改原生 Win32 分层窗口，代价高、收益仅是观感 |
+
+### 二、使用前提
+
+1. **首次使用需联网下载离线翻译模型（113 MB / 含加速版 146 MB）。**
+   模型不进安装包——放进去安装包会从 21.88 MiB 涨到约 135 MB，直接顶破 150 MB 红线。
+   首次点「下载模型」时需联网：原版 `encoder.onnx` 52.9 MB + `decoder.onnx` 60.2 MB = **113 MB**；
+   若跑过 `scripts/mt/transform_lmhead.py` 生成 `decoder.int8.onnx`（93.5 MB），总计 **146 MB**，
+   多出的 32 MB 换 6 倍单步速度。也可以手动把模型放到
+   `%APPDATA%\ShotGlance\models\opus-mt-en-zh\`。**没有模型时只有离线引擎不可用，在线引擎不受影响。**
+   > ⚠️ 坑：`decoder.int8.onnx` 缺失时程序会**静默**回落到 `decoder.onnx`——单步 14.84 ms 而不是
+   > 2.37 ms，**慢 6 倍且界面不报错**，很容易误判「加速版没生效」。
+2. **Windows 10/11 x64 only。** macOS 需要屏幕录制授权，Linux 无法完全自包含，按 Windows-only 收。
+   Windows 11 自带 WebView2；Windows 10 若缺失，安装包会联网获取（`embedBootstrapper`）。
+3. **区域框选的遮罩在虚拟机里重绘异常**（尚未在物理机复看）：VM 的 WGC 帧供应与 DWM 合成时序
+   不稳，全屏遮罩可能出现残影。物理机正常。
+4. **OCR 精度存在已知错字**：基准图两处（`阈`→`阔`、`」`→`]`），中英混排时词间空格偶发丢失
+   ——space 类的判别本身偏弱，PaddleOCR 同源同病。单行置信 < 0.5 会直接丢弃。
+5. **按量计费引擎会产生费用。** 自动翻译默认开启，`auto` 链里可能命中 DeepL / OpenAI。
+   不想付费就在设置里关掉自动翻译或只用离线引擎。
