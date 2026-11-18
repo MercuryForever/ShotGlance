@@ -564,7 +564,8 @@ powershell -ExecutionPolicy Bypass -File scripts\restore-nsis-cache.ps1
 | `SHOTGLANCE_CROP` | 自检时按 `x,y,w,h` 裁一刀再识别，验证裁剪取整与越界夹取 |
 | `SHOTGLANCE_HOLD_SECS` | 自检后保持进程 N 秒，供外部采样内存 |
 | `SHOTGLANCE_UNLOAD_TEST=1` | 保持前先卸载引擎，验证回到基线 |
-| `SHOTGLANCE_OPEN_PANEL=1` | 启动即建面板（自动化用） |
+| `SHOTGLANCE_NO_PANEL=1` | 启动**不**建窗口，回到纯托盘态（量常驻内存基线用） |
+| `SHOTGLANCE_RECLAIM_STARTUP=1` | 启动窗也参与空闲回收（`measure-memory.ps1` 阶段 C 用） |
 | `SHOTGLANCE_TOPMOST=1` | 面板置顶（取证用） |
 | `SHOTGLANCE_AUTO_OCR=1` | 面板加载后自动跑一次识别 |
 | `SHOTGLANCE_DUMP_IMG` | 自检时把采集帧落盘 |

@@ -3,6 +3,35 @@
 本项目的所有重要变更都记录在这里。版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)，
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [未发布]
+
+围绕「装了之后一眼能看懂」的三项体验改动。体积从 22,940,119 B 变为 22,948,202 B（+8,083 B），
+即 **21.89 MiB**；Rust 单测 8 passed、`tsc --noEmit` 0 错。
+
+### 新增
+
+- **托盘图标**： `TrayIconBuilder` 显式传入 32×32 PNG（编译期内嵌）。此前没传 `icon()`，
+  `tray-icon` 把 `hIcon` 置为 null，Windows 托盘区只占位不显示图形。悬停提示
+  `ShotGlance — Ctrl+Shift+S 打开面板`；左键单击/双击打开或前置面板；右键出菜单
+  （显示 / 隐藏面板、退出）。
+- **启动即显示主窗口**：双击图标直接看到界面，不再只留一个托盘图标让人猜"软件到底启动了没"。
+  窗口关闭后照旧销毁并驻留托盘，热键 `Ctrl+Shift+S` 随时唤回。
+- **安装器简体中文**：`nsis.languages = ["SimpChinese","English"]` + `displayLanguageSelector`。
+  安装前弹语言选择框，卸载程序跟随所选语言；静默安装按系统 UI 语言选。
+  实测：选中文后向导标题 `ShotGlance 安装`、正文「欢迎使用 ShotGlance 安装程序」、
+  按钮「下一步(N) >」/「取消(C)」。注：选择框自身的标题仍是英文，
+  且注册表里若有旧的 `Installer Language` 值会跳过选择框（见 README）。
+
+### 变更（会改变已有习惯）
+
+- **托盘左键由「切换显示/隐藏」改为「打开/前置」**。启动即开窗之后再切换就危险了：
+  窗口本来在前台，用户点托盘想把它叫出来，结果被关掉。隐藏改由右键菜单负责。
+- **启动窗不做空闲回收**。窗口晾在屏幕上超过 120 秒不再自动消失（否则像崩溃）；
+  由热键/托盘打开的面板仍按 120 秒回收，内存红线不受影响。
+- 环境变量：`SHOTGLANCE_OPEN_PANEL=1` 已成为默认行为，因此移除；新增
+  `SHOTGLANCE_NO_PANEL=1`（回到纯托盘态，量内存基线用）与
+  `SHOTGLANCE_RECLAIM_STARTUP=1`（让启动窗也参与回收，`measure-memory.ps1` 阶段 C 用）。
+
 ## [0.1.0] — 2026-11-16
 
 **首个可交付版本（Windows x64）。** 截图 → OCR → 翻译 → 悬浮回显的完整链路已经闭合，

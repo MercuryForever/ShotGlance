@@ -28,8 +28,38 @@ npm run tauri:dev      # 热重载，改前端秒级生效
 ```bash
 set PATH=%USERPROFILE%\.cargo\bin;%PATH%   # tauri CLI 需要能找到 cargo
 npm run tauri:build
-# 产物: src-tauri/target/release/bundle/nsis/ShotGlance_0.1.0_x64-setup.exe（21.88 MiB）
+# 产物: src-tauri/target/release/bundle/nsis/ShotGlance_0.1.0_x64-setup.exe（21.89 MiB）
 ```
+
+### 安装器语言
+
+`bundle.windows.nsis` 里配的是**单包双语 + 语言选择框**：
+
+```json
+"languages": ["SimpChinese", "English"],
+"displayLanguageSelector": true
+```
+
+- 双击安装包先弹一个语言选择框，默认高亮简体中文；选完进安装向导，**卸载程序跟随同一语言**
+- 实测：向导标题 `ShotGlance 安装`、正文「欢迎使用 ShotGlance 安装程序」、按钮「下一步(N) >」/「取消(C)」
+- 中文界面来自两处：NSIS 自带的 `Contrib/Language files/SimpChinese.nlf`（标准按钮、进度、
+  完成页），以及 Tauri bundler 内嵌的 `SimpChinese.nsh`（"正在安装…"这类自定义文案）。
+  两者都已随本地 NSIS 缓存（`scripts/vendor/nsis-3.13.zip`）与 CLI 二进制就位，**离线可打包**
+- 体积代价实测 **+8,083 字节**（22,940,119 → 22,948,202 = 21.89 MiB）
+- 静默安装 `/S` 不会弹框，此时按系统 UI 语言在列表里挑；系统语言不在列表时才退回第一个
+
+> **坑：选择框会"莫名其妙不出现"。** `MUI_LANGDLL_DISPLAY` 在
+> `HKCU\Software\shotglance\ShotGlance` 的 `Installer Language` 值存在时**直接跳过对话框**，
+> 用上次记住的语言往下走。本机复现过：该值残留 `1033`（英文），装出来的向导就是全英文，
+> 看起来像"中文配置没生效"。排查时先删这个值：
+>
+> ```powershell
+> Remove-ItemProperty "HKCU:\Software\shotglance\ShotGlance" -Name "Installer Language"
+> ```
+>
+> 另外，**选择框自身的标题/提示是英文**（`Installer Language` / `Please select a language.`）：
+> NSIS 的 LangDLL 在"语言还没选定"时才渲染，拿不到中文串，这是 NSIS 的固有限制，不是配置写错。
+> 下拉框里的语言名（如「中文(简体)」）是正常本地化的。
 
 > **只跑 `cargo build --release` 会得到一个「开发模式」的 exe**：Tauri 2 用
 > `tauri/custom-protocol` feature 区分开发/生产，缺了它 exe 仍然去连
@@ -79,15 +109,35 @@ powershell -ExecutionPolicy Bypass -File .\scripts\restore-nsis-cache.ps1
 
 ## 窗口生命周期（内存指标的关键设计）
 
-**启动时零窗口**（`tauri.conf.json` 的 `app.windows` 为空数组），进程只驻留托盘。
-面板按需创建、用完销毁：
+**启动即显示主窗口**（`tauri.conf.json` 的 `app.windows` 仍是空数组，窗口由
+`setup` 里的 `open_panel` 按需建，这样能复用同一条建窗路径、也能被环境变量关掉）。
+窗口关闭后进程继续驻留托盘，之后按需重建、用完销毁：
 
 | 触发 | 行为 |
 |---|---|
-| `Ctrl+Shift+S` / 托盘左键 | 建窗（已存在则前置复用） |
-| Esc / 关闭按钮 | **destroy** 窗口，不是 hide |
-| 无活动 120 秒 | watchdog 自动 destroy |
-| 托盘 → 退出 | `app.exit(0)` |
+| 双击 exe / 启动应用 | 建窗并显示（启动窗，**不受空闲回收影响**） |
+| `Ctrl+Shift+S` | 建窗（已存在则前置复用） |
+| 托盘左键单击 / 双击 | 打开或前置面板，**不切换**（窗口在前台时点了不会把它关掉） |
+| 托盘右键 | 菜单：显示 / 隐藏面板、退出 |
+| Esc / 关闭按钮 / 托盘菜单隐藏 | **destroy** 窗口，不是 hide |
+| 无活动 120 秒 | watchdog 自动 destroy（仅对热键/托盘打开的面板） |
+
+**启动窗为什么不参与空闲回收**：用户双击图标后可能切去别的程序干活，窗口晾在屏幕上。
+若沿用 120 秒回收，窗口会在眼皮底下自己消失——看起来像崩溃。所以启动窗豁免；
+一旦它被销毁（点 X、托盘隐藏），`STARTUP_PANEL` 标记复位，之后打开的面板照旧回收。
+
+### 托盘图标
+
+| 项 | 值 |
+|---|---|
+| 图标资源 | `src-tauri/icons/32x32.png`，用 `tauri::include_image!` 编译期内嵌（不走运行时读盘） |
+| 悬停提示 | `ShotGlance — Ctrl+Shift+S 打开面板` |
+| 左键单击 / 双击 | 打开或前置面板 |
+| 右键 | 弹出菜单 |
+
+**图标必须显式传进 `TrayIconBuilder::icon()`**。不传时 `tray-icon` 会把 `hIcon`
+设成 null，Windows 上就是一个空白占位块——托盘区占着位置但什么都看不见，很容易
+被误判成"托盘没注册成功"。用 PNG 而不是 `icon.ico`：这条链路吃 RGBA，ico 还得再解码一次。
 
 为什么必须 destroy 而不是 hide：窗口"隐藏"时 WebView2 的子进程照常存活，
 内存一分不省。实测数据（`scripts/measure-memory.ps1`）：
@@ -114,7 +164,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\restore-nsis-cache.ps1
 
 | 环境变量 | 作用 |
 |---|---|
-| `SHOTGLANCE_OPEN_PANEL=1` | 启动即建面板，用于脚本化测量窗口态 |
+| `SHOTGLANCE_NO_PANEL=1` | 启动**不**建窗口，回到纯托盘态。量"常驻内存 / 冷启动"基线必须用它 |
+| `SHOTGLANCE_RECLAIM_STARTUP=1` | 让启动窗也参与空闲回收。`measure-memory.ps1` 的阶段 C 靠它观察回收 |
 | `SHOTGLANCE_IDLE_SECS=n` | 覆盖空闲阈值，便于十几秒内验证回收 |
 
 验证：

@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -33,6 +33,22 @@ const WATCHDOG_TICK_SECS: u64 = 5;
 
 /// 最近一次活动时间（Unix 毫秒）。0 表示尚无活动。
 static LAST_ACTIVE_MS: AtomicU64 = AtomicU64::new(0);
+
+/// 当前这扇面板是不是"启动时自动弹出"的那一扇。
+///
+/// 为什么需要这个标记：应用启动就直接显示主窗口，用户开完可能切去
+/// 别的程序干活，把窗口晾在屏幕上。若沿用原来的 120 秒空闲回收，窗口会在
+/// 用户眼皮底下自己消失——看起来像崩溃。所以启动窗不参与回收；
+/// 一旦销毁（用户点 X、托盘菜单隐藏、空闲回收其它窗）标记复位，
+/// 之后由热键/托盘打开的面板仍按原规则回收，内存红线不受影响。
+static STARTUP_PANEL: AtomicBool = AtomicBool::new(false);
+
+/// 是否允许回收"启动窗"（默认不允许）。
+///
+/// 只给 `scripts/measure-memory.ps1` 的阶段 C 用：那个脚本要证明
+/// "窗口闲置后会被销毁、内存能降回去"，而启动窗按默认规则是豁免的，
+/// 不打开这个开关就永远等不到回收，脚本会误报失败。
+static RECLAIM_STARTUP_PANEL: AtomicBool = AtomicBool::new(false);
 
 /// 选区阶段暂存的全屏帧。
 ///
@@ -220,6 +236,9 @@ fn destroy_panel(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(PANEL) {
         let _ = w.destroy();
     }
+    // 窗口没了，"启动窗"这个身份也跟着失效：下次打开的是普通面板，
+    // 该被空闲回收照常回收，不能一直豁免下去。
+    STARTUP_PANEL.store(false, Ordering::Relaxed);
     // 选区状态跟着窗口一起作废：留着的话下一轮打开面板会看到一个
     // 早已过期的裁剪结果。
     clear_pending();
@@ -522,6 +541,10 @@ fn spawn_idle_watchdog(app: AppHandle) {
         // 会让选区面消失但 PENDING 帧还在，状态就乱了。
         if app.get_webview_window(PANEL).is_some()
             && !is_selecting()
+            // 启动窗豁免：它是用户"打开应用"的那扇窗，被自动收掉会像崩溃。
+            // 阶段 C 的自检脚本要求回收，故留了这个反向开关。
+            && !(STARTUP_PANEL.load(Ordering::Relaxed)
+                && !RECLAIM_STARTUP_PANEL.load(Ordering::Relaxed))
             && idle_ms() > idle_limit_secs() * 1000
         {
             destroy_panel(&app);
@@ -1277,41 +1300,66 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&toggle, &quit])?;
 
             TrayIconBuilder::with_id("main-tray")
+                // 必须显式给图标：不传时 tray-icon 会把 hIcon 设成 null，
+                // Windows 上就是一个空白占位块（能看到托盘区有位置，但什么都没有）。
+                // 用 32×32 而不是 icon.ico：这条链路吃 RGBA，ico 还得再解码一次。
+                .icon(tauri::include_image!("icons/32x32.png"))
                 .menu(&menu)
                 .tooltip("ShotGlance — Ctrl+Shift+S 打开面板")
+                // 左键留给"打开面板"，菜单只走右键，和系统里其它托盘程序一致。
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "quit" => app.exit(0),
                     "toggle" => toggle_panel(app),
                     _ => {}
                 })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
+                .on_tray_icon_event(|tray, event| match event {
+                    // 单击 = 打开/前置面板，**不再做切换**。
+                    // 切换语义在"启动即开窗"之后变得危险：窗口本来就在前台，
+                    // 用户点一下托盘想把它叫出来，结果被关掉了。
+                    // 复用/还原/前置都在 open_panel 里，这里只负责转发。
+                    TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
                         ..
-                    } = event
-                    {
-                        toggle_panel(tray.app_handle());
                     }
+                    | TrayIconEvent::DoubleClick {
+                        button: MouseButton::Left,
+                        ..
+                    } => {
+                        let _ = open_panel(tray.app_handle());
+                    }
+                    _ => {}
                 })
                 .build(app)?;
 
+            RECLAIM_STARTUP_PANEL.store(
+                std::env::var_os("SHOTGLANCE_RECLAIM_STARTUP").is_some(),
+                Ordering::Relaxed,
+            );
             spawn_idle_watchdog(app.handle().clone());
 
-            // 可测性开关：设置 SHOTGLANCE_OPEN_PANEL=1 时启动即建面板。
-            // 用途是让内存/冷启动测试能脚本化（含 CI），不改变默认行为。
-            if std::env::var_os("SHOTGLANCE_OPEN_PANEL").is_some() {
+            // 启动即显示主窗口：v0.1 是"纯托盘常驻"，用户装完看不到任何界面，
+            // 得先知道热键或去托盘点一下——第一印象就是"这软件是不是没启动"。
+            // 现在改成常规桌面程序的行为：双击图标就把界面摆在眼前。
+            //
+            // SHOTGLANCE_NO_PANEL=1 可跳过。保留这个开关是因为"空闲内存 < 80 MB"
+            // 和"冷启动"两项基线必须在纯托盘态下量，否则数字没有可比性。
+            if std::env::var_os("SHOTGLANCE_NO_PANEL").is_none() {
                 // 建窗失败必须打出来：静默忽略会让"界面打不开"变成一个
                 // 完全无迹可查的空白，只能靠猜。
                 match open_panel(app.handle()) {
-                    Ok(w) => eprintln!(
-                        "[shotglance] 面板已建: visible={:?} pos={:?} size={:?}",
-                        w.is_visible(),
-                        w.outer_position(),
-                        w.inner_size()
-                    ),
-                    Err(e) => eprintln!("[shotglance] 建窗失败: {e}"),
+                    Ok(w) => {
+                        // 打上标记，让空闲回收放过这扇窗（见 STARTUP_PANEL 注释）。
+                        STARTUP_PANEL.store(true, Ordering::Relaxed);
+                        eprintln!(
+                            "[shotglance] 启动面板已建: visible={:?} pos={:?} size={:?}",
+                            w.is_visible(),
+                            w.outer_position(),
+                            w.inner_size()
+                        );
+                    }
+                    Err(e) => eprintln!("[shotglance] 启动建窗失败: {e}"),
                 }
             }
 

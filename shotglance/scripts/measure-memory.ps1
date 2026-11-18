@@ -10,9 +10,13 @@
       window when idle, not hiding it - hidden windows keep child processes alive.
 
     Three stages:
-      A  resident   -> app started, no panel. Expect 0 WebView2 children.
-      B  panel open -> panel created (via SHOTGLANCE_OPEN_PANEL=1). Expect many.
+      A  resident   -> app started with SHOTGLANCE_NO_PANEL=1, no panel.
+                       Expect 0 WebView2 children.
+      B  panel open -> panel created (now the DEFAULT startup behaviour).
+                       Expect many.
       C  reclaimed  -> after idle timeout. Expect back to stage A levels.
+                       The startup panel is exempt from reclamation by default,
+                       so stage B/C also set SHOTGLANCE_RECLAIM_STARTUP=1.
 
     Usage:
       powershell -ExecutionPolicy Bypass -File .\scripts\measure-memory.ps1
@@ -101,7 +105,10 @@ $results = @()
 # ---------- Stage A: resident, no window ----------
 Say "[A] resident (tray only, no panel) ..."
 $wvBase = Get-Wv2Ids
+# App shows its main window at startup since v0.2; pin it to tray-only for this stage.
+$env:SHOTGLANCE_NO_PANEL = '1'
 $pA = Start-Process -FilePath $exe -PassThru
+Remove-Item Env:SHOTGLANCE_NO_PANEL -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 4
 $results += Measure-Stage -ProcId $pA.Id -WvBaseline $wvBase -Name 'A resident'
 
@@ -110,12 +117,12 @@ Say "[B] panel open (cold start measured to first window) ..."
 Stop-App
 $wvBase = Get-Wv2Ids
 
-$env:SHOTGLANCE_OPEN_PANEL = '1'
+$env:SHOTGLANCE_RECLAIM_STARTUP = '1'
 $env:SHOTGLANCE_IDLE_SECS = "$IdleSecs"
 if ($NoWarmup) { $env:SHOTGLANCE_WARMUP = '0' }
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $pB = Start-Process -FilePath $exe -PassThru
-Remove-Item Env:SHOTGLANCE_OPEN_PANEL -ErrorAction SilentlyContinue
+Remove-Item Env:SHOTGLANCE_RECLAIM_STARTUP -ErrorAction SilentlyContinue
 Remove-Item Env:SHOTGLANCE_IDLE_SECS -ErrorAction SilentlyContinue
 Remove-Item Env:SHOTGLANCE_WARMUP -ErrorAction SilentlyContinue
 
