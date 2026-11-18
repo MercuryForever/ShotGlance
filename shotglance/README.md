@@ -25,11 +25,26 @@ npm run tauri:dev      # 热重载，改前端秒级生效
 
 ## 构建
 
-```bash
+编译产物不落在源码树里，统一进仓库根的**构建区** `build/`。入口是仓库根的 `build.ps1`：
+
+```powershell
+.\build.ps1                    # 前端 + 后端 + 归档安装包
+.\build.ps1 -Target Frontend   # 只跑 tsc --noEmit + vite → build\dist
+.\build.ps1 -Target Backend    # 只跑 cargo + NSIS → build\target
+.\build.ps1 -Clean             # 先清空 build\dist 与 build\target
+```
+
+产物位置：`..\build\target\release\bundle\nsis\ShotGlance_1.0.0_x64-setup.exe`（21.89 MiB），
+并被归档到 `..\build\release\`。手工等价命令：
+
+```
 set PATH=%USERPROFILE%\.cargo\bin;%PATH%   # tauri CLI 需要能找到 cargo
 npm run tauri:build
-# 产物: src-tauri/target/release/bundle/nsis/ShotGlance_0.1.0_x64-setup.exe（21.89 MiB）
 ```
+
+路径连线（三处配置，改布局时一起改）：`vite.config.ts` 的 `build.outDir = ../build/dist`、
+`src-tauri/tauri.conf.json` 的 `frontendDist = ../../build/dist`、
+`src-tauri/.cargo/config.toml` 的 `build.target-dir = ../../build/target`。
 
 ### 安装器语言
 
@@ -228,7 +243,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\measure-memory.ps1 -IdleSecs 
 无界面自检（结果写入 `%TEMP%\shotglance-selftest.txt`）：
 
 ```powershell
-$env:SHOTGLANCE_SELF_TEST='1'; .\src-tauri\target\release\shotglance.exe
+$env:SHOTGLANCE_SELF_TEST='1'; ..\build\target\release\shotglance.exe
 # 输出冷启动基线 + 预热后三轮，以及 PNG/JPEG 编码对比
 ```
 
@@ -312,11 +327,11 @@ dll 寻址顺序：`SHOTGLANCE_ORT_DLL` → exe 同级 → `exe/models/` → 仓
 
 ```powershell
 # 真实屏幕
-$env:SHOTGLANCE_OCR_SELFTEST='1'; .\src-tauri\target\release\shotglance.exe
+$env:SHOTGLANCE_OCR_SELFTEST='1'; ..\build\target\release\shotglance.exe
 
 # 固定图片（可复现，脚本可断言行数与文本）
 $env:SHOTGLANCE_OCR_IMG='src-tauri/tests/ocr-sample.png'
-$env:SHOTGLANCE_OCR_SELFTEST='1'; .\src-tauri\target\release\shotglance.exe
+$env:SHOTGLANCE_OCR_SELFTEST='1'; ..\build\target\release\shotglance.exe
 # 结果写到 %TEMP%\shotglance-ocr-selftest.txt
 ```
 
@@ -352,7 +367,12 @@ src-tauri/src/
   vendor/        onnxruntime.dll（19 MB）
   tests/         ocr-sample.png（OCR 准确率基准图）
 src/             前端（原生 TS，无框架）
-release/         已构建的安装包（22 MB）
+
+../build/        ★ 构建区（不入库，见仓库根 .gitignore 的 /build/）
+  dist/            vite 前端产物
+  target/          cargo 编译输出（release/bundle/nsis 下是安装包）
+  release/         归档的安装包（清掉 target 后成品仍在）
+  logs/            构建转录
 scripts/
   export-snapshot.ps1      白名单打包迁移快照（新增文件记得加进列表）
   restore-nsis-cache.ps1   离线补齐 NSIS 打包工具链

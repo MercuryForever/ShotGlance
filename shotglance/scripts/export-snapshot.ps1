@@ -73,9 +73,13 @@ function Copy-Rel {
 # ---------------------------------------------------------------- allow-list
 # Paths are relative to the workspace root (the parent of shotglance\).
 $IncludeFiles = @(
-    # --- workspace level
+    # --- workspace level (Git area: version control + repo home)
     'README.md'
+    'CHANGELOG.md'
+    'LICENSE'
     '.gitignore'
+    '.gitattributes'
+    'build.ps1'
     'verify-env.ps1'
     # --- frontend
     'shotglance/.gitignore'
@@ -126,6 +130,12 @@ $IncludeFiles = @(
     'shotglance/scripts/mt/cmp.py'
     'shotglance/scripts/mt/export_vocab.py'
     'shotglance/scripts/mt/merge_vocab.py'
+    'shotglance/scripts/mt/transform_lmhead.py'
+    'shotglance/scripts/mt/verify_lmhead.py'
+    'shotglance/scripts/mt/probe_lmhead.py'
+    'shotglance/scripts/mt/probe_pattern.py'
+    'shotglance/scripts/mt/profile_ops.py'
+    'shotglance/scripts/mt/bench_decode.py'
     'shotglance/scripts/vendor/nsis-3.13.zip'
     'shotglance/scripts/vendor/nsis_tauri_utils.dll'
 )
@@ -174,16 +184,22 @@ foreach ($p in $IncludeDirs) { $copied += Copy-Rel $p }
 Write-Log ("  entries copied: " + $copied)
 
 if (-not $NoInstaller) {
-    # Prefer the archived copy (survives a target\ wipe), fall back to the
-    # fresh bundle output.
-    $candidates = @(
-        (Join-Path $ProjDir 'release/ShotGlance_0.1.0_x64-setup.exe'),
-        (Join-Path $ProjDir 'src-tauri/target/release/bundle/nsis/ShotGlance_0.1.0_x64-setup.exe')
-    )
+    # 安装包现在住在仓库根的构建区 build\release（归档）与 build\target\release\bundle\nsis
+    # （新产物）。两处都用通配找，版本号升级后本脚本无需改。
+    $candidates = @()
+    foreach ($dir in @(
+            (Join-Path $RootDir 'build\release'),
+            (Join-Path $RootDir 'build\target\release\bundle\nsis')
+        )) {
+        if (Test-Path -LiteralPath $dir) {
+            $candidates += @(Get-ChildItem -LiteralPath $dir -Filter '*-setup.exe' -File -ErrorAction SilentlyContinue |
+                             Sort-Object LastWriteTime -Descending | ForEach-Object { $_.FullName })
+        }
+    }
     $setup = $null
     foreach ($c in $candidates) { if (Test-Path -LiteralPath $c) { $setup = $c; break } }
     if ($setup) {
-        $rel = 'release/ShotGlance_0.1.0_x64-setup.exe'
+        $rel = 'release/' + (Split-Path -Leaf $setup)
         $dst = Join-Path $Stage $rel
         $dstDir = Split-Path -Parent $dst
         if (-not (Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }

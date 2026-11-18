@@ -1,8 +1,13 @@
-# 依赖与构建产物（全部可重建，见 HANDOFF.md §3.2）
+# 工程内忽略规则（仓库级规则见上级 ../.gitignore）
+# 注意：编译产物已整体搬到仓库根的构建区 build/，这里不再需要 dist/ 与 target/。
+
+# 依赖与构建期生成物（可重建）
 node_modules/
+src-tauri/gen/
+
+# 旧布局遗留（v1.0.0 之前产物落在源码树内，现已迁到仓库根 build/）
 dist/
 src-tauri/target/
-src-tauri/gen/
 release/
 
 # 下载/安装缓存
@@ -18,8 +23,11 @@ Thumbs.db
 .idea/
 
 # 注意：以下必须提交，别加进忽略
-#   src-tauri/Cargo.lock
-#   src-tauri/models/*.onnx + dict.txt   (15 MB)
-#   src-tauri/assets/mt/tokens.tsv       (1.8 MB)
-#   src-tauri/vendor/onnxruntime.dll     (19 MB，PyPI 镜像取一次很贵)
-#   scripts/vendor/                      (NSIS 离线包)
+#   src-tauri/Cargo.toml + Cargo.lock        依赖与版本锁
+#   src-tauri/.cargo/config.toml             target-dir → ../../build/target
+#   src-tauri/tauri.conf.json                打包/窗口/语言配置
+#   vite.config.ts / tsconfig.json           outDir → ../build/dist
+#   src-tauri/models/*.onnx + dict.txt       (15 MB)
+#   src-tauri/assets/mt/tokens.tsv           (1.8 MB)
+#   src-tauri/vendor/onnxruntime.dll         (19 MB，PyPI 镜像取一次很贵)
+#   scripts/vendor/                          (NSIS 离线包)

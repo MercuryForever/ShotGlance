@@ -13,7 +13,7 @@
 
 - `shotglance-code.zip` — 代码 HEAD 快照，含 `.workbuddy/memory/` 全部记忆
 - `shotglance-history.bundle` — 完整 git 历史（5 个提交）
-- `ShotGlance_0.1.0_x64-setup.exe` — 成品安装包 21.87 MiB
+- `ShotGlance_1.0.0_x64-setup.exe` — 成品安装包 21.89 MiB（v1.0.0，仓库根构建区 `build/release/` 的归档副本）
 - `cargo-registry.tar`（crate 缓存 + index）、`node_modules.tar`（前端依赖）
 - `SHA256SUMS.txt`
 
@@ -50,7 +50,8 @@
    缺 Rust → 装 rustup 并指定 `1.99.1`（**msvc** 工具链，默认已静态链 vcruntime，不需要 `+crt-static`）。
    缺 MSVC/SDK → 见第三节。**这台机器如果之前装过 VS，先跑 vswhere 确认，可能省掉 58 分钟。**
 8. **环境自检**：跑 `W\verify-env.ps1`，要求除 Python 外全 PASS（Python 3.10/3.11 只影响重新导出 OCR 模型，不影响构建，可忽略）。
-9. **构建验收三级**：`cargo check` → `cargo build`（无 target，全量约 30 分钟）→ `npm run tauri:build`。
+9. **构建验收三级**：`cargo check` → `cargo build`（无缓存，全量约 30 分钟）→ `npm run tauri:build`。
+   v1.0.0 起构建入口是仓库根 `build.ps1`，产物落在构建区 `build/`（`dist`/`target`/`release`），源码树里不再有 `target` 与 `dist`。
 10. **对比基线**：安装包应约 **21.87 MiB**。偏差明显就停下来分析，不要当成"新版本正常"。
 
 ## 三、编译器安装（只在第 7 步确认缺失时做）
@@ -93,6 +94,6 @@ Stop-Process -Name BackgroundDownload -Force -ErrorAction SilentlyContinue
 
 - **环境没验收通过之前不要动功能代码。** 功能顺序：译文悬浮层 → OCR 后自动翻译 → 离线解码提速。
 - 某步失败时，先把报错原文和你对根因的判断告我，不要反复重试同一条命令。
-- 这个仓库有 git 历史，后续每次改动都要提交。`.gitignore` 已挡住 `env-bundle/`、`target/`、`node_modules/`、快照 zip。
+- 这个仓库有 git 历史，后续每次改动都要提交。`.gitignore` 用一条 `/build/` 挡住整个构建区，另有 `env-bundle/`、`node_modules/`、快照 zip。
 - 旧方案 `env-bundle/` 和 `scripts/restore-env-bundle.ps1` 本次不适用（包里也没有 `env-bundle`），不要拿它恢复环境。
-- 如果暂时只想验证工具能不能用、不急着构建：直接双击 `M\ShotGlance_0.1.0_x64-setup.exe` 安装即可，不装编译环境也能跑。
+- 如果暂时只想验证工具能不能用、不急着构建：直接双击 `M\ShotGlance_1.0.0_x64-setup.exe` 安装即可，不装编译环境也能跑。

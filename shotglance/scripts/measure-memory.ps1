@@ -44,7 +44,8 @@ function Say {
     if ($LogPath) { Add-Content -Path $LogPath -Value $Message -Encoding utf8 }
 }
 
-$exe = Join-Path $PSScriptRoot '..\src-tauri\target\release\shotglance.exe'
+# 构建区在仓库根 build\target（见 src-tauri/.cargo/config.toml）
+$exe = Join-Path $PSScriptRoot '..\..\build\target\release\shotglance.exe'
 if (-not (Test-Path $exe)) { throw "executable not found: $exe (run npm run tauri:build first)" }
 $exe = (Resolve-Path $exe).Path
 

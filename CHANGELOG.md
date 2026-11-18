@@ -3,12 +3,32 @@
 本项目的所有重要变更都记录在这里。版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)，
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [未发布]
+## [1.0.0] — 2026-11-18
 
-围绕「装了之后一眼能看懂」的三项体验改动。体积从 22,940,119 B 变为 22,948,202 B（+8,083 B），
-即 **21.89 MiB**；Rust 单测 8 passed、`tsc --noEmit` 0 错。
+首个对外发布版。在 0.1.0 之上补齐三项体验改动，并把仓库拆成「Git 区 / 构建区」两个互不干扰的区域。
+体积 21.89 MiB；Rust 单测 8 passed、`tsc --noEmit` 0 错。
 
-### 新增
+### 仓库结构（本次新划分）
+
+- **Git 区**（入库）：仓库根的 `.gitignore` / `.gitattributes` / `README.md` / `LICENSE`（MIT）/
+  `CHANGELOG.md` / `build.ps1` / `verify-env.ps1`，以及工程目录 `shotglance/`
+  （前端 `src/`、`src-tauri/`、`scripts/`、全部构建配置）。
+- **构建区**（不入库）：仓库根 `build/`，下辖 `dist`（vite 前端产物）、`target`（cargo 编译输出 +
+  `release/bundle/nsis` 安装包）、`release`（归档的安装包）、`logs`（构建转录）。
+  根 `.gitignore` 用一条 `/build/` 整体排除。
+- 三条路径连线：`vite.config.ts → outDir: "../build/dist"`；
+  `src-tauri/tauri.conf.json → frontendDist: "../../build/dist"`；
+  `src-tauri/.cargo/config.toml → build.target-dir = "../../build/target"`。
+- 构建配置**留在 Git 区是刻意的**：npm / cargo / vite / tauri 都按固定相对路径查找配置，搬走即断。
+  「构建脚本」这个角色因此交给根目录 `build.ps1`——它只负责把产物写进 `build/`，自己不存配置。
+- 版本号统一为 **1.0.0**（`package.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json`），
+  安装包文件名随之变为 `ShotGlance_1.0.0_x64-setup.exe`。
+- 新增 `.gitattributes`：把 `*.onnx` / `*.dll` / `dict.txt` / `*.tsv` 钉成 `-text`，
+  防止 `core.autocrlf` 再次破坏 OCR 字典与 SentencePiece 词表。
+- 新增 `LICENSE`（MIT）。新增根 `build.ps1` 统一构建入口（带 `-Clean` / `-DebugBuild` /
+  `-Target Frontend|Backend`，并把安装包归档到 `build/release`）。
+
+### 新增（体验）
 
 - **托盘图标**： `TrayIconBuilder` 显式传入 32×32 PNG（编译期内嵌）。此前没传 `icon()`，
   `tray-icon` 把 `hIcon` 置为 null，Windows 托盘区只占位不显示图形。悬停提示

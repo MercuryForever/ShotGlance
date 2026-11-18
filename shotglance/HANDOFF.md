@@ -15,8 +15,9 @@ npm ci
 npm run tauri:build          # 需要 PATH 里有 cargo
 ```
 
-产物 `src-tauri\target\release\bundle\nsis\ShotGlance_0.1.0_x64-setup.exe`（22 MB）。
-不想装工具链就直接跑快照里的 `release\ShotGlance_0.1.0_x64-setup.exe`。
+产物 `..\build\target\release\bundle\nsis\ShotGlance_1.0.0_x64-setup.exe`（22 MB），并归档到 `..\build\release\`。
+不想装工具链就直接跑快照里的 `release\ShotGlance_1.0.0_x64-setup.exe`。
+（v1.0.0 起编译产物统一在仓库根构建区 `build/`，源码树里不再有 `target/` 与 `dist/`。）
 
 ---
 
@@ -300,7 +301,7 @@ Rust 工具链只需 `stable-msvc`，**不需要** nightly、不需要 `+crt-sta
 | 脚本 | `scripts/{measure-memory,restore-nsis-cache,make-ocr-sample,export-snapshot}.ps1`、`scripts/gen_icon.py`、`scripts/mt/{ref,cmp,export_vocab,merge_vocab,bench_decode,profile_ops,probe_lmhead,probe_pattern,transform_lmhead,verify_lmhead}.py` + `scripts/mt/README.md`、`scripts/vendor/`（NSIS 3.13 + 插件 dll） | 2.4 MB | NSIS vendor 与 mt 转换脚本都是"重建很贵"的东西，必须带 |
 | 基准 | `src-tauri/tests/ocr-sample.png` | 24 KB | OCR 可复现验证图 |
 | 文档 | `README.md`、本文件、`.workbuddy/memory/*` | 90 KB | 决策依据 + 踩坑记录 + 记忆 |
-| 成品（可选） | `release/ShotGlance_0.1.0_x64-setup.exe` | 22 MB | 不想装工具链时直接安装。`-NoInstaller` 可跳过 |
+| 成品（可选） | `release/ShotGlance_1.0.0_x64-setup.exe`（快照内路径，源自仓库根 `build/release/`） | 22 MB | 不想装工具链时直接安装。`-NoInstaller` 可跳过 |
 
 **离线翻译模型（113 MB）不在快照里**，也不该在：它只对选了离线引擎的用户有价值，放进去会把 45 MB 变成 160 MB。
 首次使用在应用内下载到 `%APPDATA%\ShotGlance\models\opus-mt-en-zh\`，或者从旧机器直接拷这个目录。
@@ -405,14 +406,14 @@ npm run tauri:dev
 ### Step 5 — 无界面自检（脚本化 / CI 用，不需要点界面）
 
 ```powershell
-cd src-tauri
+cd ..\..                 # 仓库根（构建区 build\ 在这里）
 # 截图：冷/热多轮 + 编码对比
-$env:SHOTGLANCE_SELF_TEST='1'; .\target\release\shotglance.exe
+$env:SHOTGLANCE_SELF_TEST='1'; .\build\target\release\shotglance.exe
 Get-Content "$env:TEMP\shotglance-selftest.txt"
 
 # OCR：可复现基准图
-$env:SHOTGLANCE_OCR_IMG='tests/ocr-sample.png'
-$env:SHOTGLANCE_OCR_SELFTEST='1'; .\target\release\shotglance.exe
+$env:SHOTGLANCE_OCR_IMG='shotglance\src-tauri\tests\ocr-sample.png'
+$env:SHOTGLANCE_OCR_SELFTEST='1'; .\build\target\release\shotglance.exe
 Get-Content "$env:TEMP\shotglance-ocr-selftest.txt"     # 期望 8 行、conf > 0.95
 ```
 
@@ -584,13 +585,14 @@ dll 寻址顺序：`SHOTGLANCE_ORT_DLL` → exe 同级 → `exe/models/` → 仓
 | 动作 | 内容 |
 |---|---|
 | 清理 | 删 `NVIDIA Corporation/`（根目录与 `src-tauri/` 各一个空目录，显卡驱动安装器留下的）；删 `.setup/` 里的安装器（`gen_icon.py` 已移到 `scripts/`，NSIS 那两个文件 `scripts/vendor/` 本来就有） |
-| 归档 | 把 `target/release/bundle/nsis/` 的安装包复制到 **`shotglance\release\`**，这样清掉 `target` 之后成品还在 |
+| 归档 | 把安装包复制到仓库根的 **`build\release\`**（v1.0.0 起；旧版是 `shotglance\release\`），这样清掉 `build\target` 之后成品还在 |
 | 重建 | 重新生成快照（旧快照是 11-09 的，不含翻译层）；`export-snapshot.ps1` 白名单补上 `translate/*`、`assets/mt/tokens.tsv`、`scripts/mt/*`、`scripts/gen_icon.py`、根 `README.md` |
 | 文档 | 新增工作区根 `README.md`（索引 + 三条恢复路径 + 校验和）；本文件 §3 按实际内容重写；修 `verify-env.ps1` 里 "PP-OCRv6" 的笔误 |
 
 没做的，以及原因：
 
-- **没有 `git init`**。这是最后一件该做但没做的事——`Cargo.lock`、`gen/`、`tauri.conf.json` 目前没有任何版本控制兜底。新设备上第一件事建议 `git init` 并把 `node_modules/ target/ dist/ gen/` 写进 `.gitignore`（已有基础版）。
+- ~~**没有 `git init`**~~ → 2026-11-18 已补上：仓库根 `C:\work\shotglance`，`Cargo.lock`、`tauri.conf.json`、`.cargo/config.toml` 全部入库。
+  同时把仓库拆成 Git 区 / 构建区，`node_modules/`、`target/`、`dist/`、`gen/` 一律不进版本库（见根 `.gitignore` 与 `README.md`）。
 - **没有删 `node_modules` / `target`**（本次保留，方便在旧机器上继续验证）。它们不进快照，删不删都不影响迁移，只是占盘。
 - **没有动 `dist/` 与 `gen/`**：都是构建期自动重生成的，删了也不影响，但 `tauri:dev` 又要多等一轮。
 

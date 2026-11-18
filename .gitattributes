@@ -1,0 +1,39 @@
+# ═══════════════════════════════════════════════════════════════════════
+#  .gitattributes — 保护二进制资产与换行符，避免跨机器 checkout 损坏
+#
+#  背景：PortableGit 默认 core.autocrlf=true，会把 dict.txt (26250 B) 变成
+#  32873 B、tokens.tsv (1867691 B) 变成 1932692 B（差值正好=行数），
+#  OCR 字典每行多一个 \r，SentencePiece 末列被污染。用属性表把它钉死。
+# ═══════════════════════════════════════════════════════════════════════
+
+# 默认：文本文件统一 LF 入库/检出
+* text=auto eol=lf
+
+# ── 必须逐字节一致，禁止任何换行符转换 ──────────────────────────────
+*.onnx   -text
+*.dll    -text
+*.exe    -text
+*.ico    -text
+*.png    -text
+*.tsv    -text
+*.spm    -text
+shotglance/src-tauri/models/dict.txt  -text
+
+# ── 源码与脚本：LF ──────────────────────────────────────────────────
+*.rs     text eol=lf
+*.ts     text eol=lf
+*.js     text eol=lf
+*.css    text eol=lf
+*.html   text eol=lf
+*.json   text eol=lf
+*.toml   text eol=lf
+*.md     text eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+
+# PowerShell 在 PS 5.1 下按 ANSI 读无 BOM 的 UTF-8，会破坏 param 块；
+# 这里保留 CRLF + 由编辑器保证 BOM，不做自动转换。
+*.ps1    text eol=crlf
+
+# ── 构建区不参与属性判定（本来也不入库）─────────────────────────────
+build/   export-ignore

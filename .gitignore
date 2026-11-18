@@ -1,9 +1,49 @@
-# 迁移快照（体积大，按需用 shotglance/scripts/export-snapshot.ps1 重新生成）
+# ═══════════════════════════════════════════════════════════════════════
+#  ShotGlance — 仓库只收「Git 区」。
+#
+#  Git 区（入库）          仓库根：.gitignore / .gitattributes / README.md /
+#                          LICENSE / CHANGELOG.md / build.ps1 / verify-env.ps1
+#                          + 工程目录 shotglance/（源码与构建配置）
+#  构建区（不入库）        build/：dist / target / release / logs
+#
+#  一条铁律：凡是可以由源码重新生成的，一律进 build/ 并被下面这行排除。
+#  验证方式：git status 里永不出现 build/ 开头的路径。
+# ═══════════════════════════════════════════════════════════════════════
+
+# ── 构建区：一个目录兜住所有产物，删掉即可全量重建 ──────────────────
+/build/
+
+# ── 工程内联的产物（工具把路径写死在源码树里，只能就地忽略）────────
+shotglance/node_modules/          # npm 依赖
+shotglance/src-tauri/gen/         # tauri 生成的 ACL/schema，构建期自动重建
+
+# ── 依赖（任意层级兜底）──────────────────────────────────────────────
+node_modules/
+
+# ── 迁移快照 / 环境包（体积大，换机时单独拷走）──────────────────────
 shotglance-snapshot-*.zip
 shotglance-snapshot-*-report.txt
-
-# 环境包（1.8 GB：rustup 工具链 + crate 缓存 + node_modules + target）
-# 换机器时单独拷走，不进版本库。生成方式见 shotglance/ENV-MIGRATION.md
 env-bundle/
 
-# 工程内部的忽略规则见 shotglance/.gitignore
+# ── 本地临时与编辑器 ─────────────────────────────────────────────────
+*.log
+*.part
+*.exe.download
+.setup/
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+
+# ── 以下必须提交，别加进忽略 ─────────────────────────────────────────
+#   build.ps1                                构建入口（脚本，不是产物）
+#   shotglance/package.json                  npm 依赖与脚本
+#   shotglance/src-tauri/Cargo.toml          Rust 依赖与 release profile
+#   shotglance/src-tauri/Cargo.lock          锁版本
+#   shotglance/src-tauri/.cargo/config.toml  把 target-dir 指向 build/target
+#   shotglance/src-tauri/tauri.conf.json     打包与窗口配置
+#   shotglance/vite.config.ts                outDir 指向 build/dist
+#   shotglance/src-tauri/models/*.onnx + dict.txt   (15 MB，OCR 模型)
+#   shotglance/src-tauri/assets/mt/tokens.tsv       (1.8 MB)
+#   shotglance/src-tauri/vendor/onnxruntime.dll     (19 MB，镜像取一次很贵)
+#   shotglance/scripts/vendor/                      (NSIS 离线包)

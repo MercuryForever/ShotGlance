@@ -5,5 +5,11 @@
 # [target.x86_64-pc-windows-msvc]
 # rustflags = ["-C", "target-feature=+crt-static"]
 
+[build]
+# 编译产物统一落到仓库根的「构建区」build/target（含 release/bundle/nsis 安装包）。
+# cargo 的路径基准是「.cargo 目录的父目录」，即 src-tauri/，所以这里要退两级。
+# 原则：源码树里不出现任何编译输出，删掉整个 build/ 不影响可重建性。
+target-dir = "../../build/target"
+
 [net]
 retry = 3
