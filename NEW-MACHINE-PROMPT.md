@@ -13,7 +13,7 @@
 
 - `shotglance-code.zip` — 代码 HEAD 快照，含 `.workbuddy/memory/` 全部记忆
 - `shotglance-history.bundle` — 完整 git 历史（5 个提交）
-- `ShotGlance_1.0.1_x64-setup.exe` — 成品安装包 21.89 MiB（v1.0.1，仓库根构建区 `build/release/` 的归档副本）
+- `ShotGlance_1.0.1_x64-setup.exe` — 成品安装包 21.88 MiB（v1.0.1，仓库根构建区 `build/release/` 的归档副本）
 - `cargo-registry.tar`（crate 缓存 + index）、`node_modules.tar`（前端依赖）
 - `SHA256SUMS.txt`
 

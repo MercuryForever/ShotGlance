@@ -34,7 +34,7 @@ npm run tauri:dev      # 热重载，改前端秒级生效
 .\build.ps1 -Clean             # 先清空 build\dist 与 build\target
 ```
 
-产物位置：`..\build\target\release\bundle\nsis\ShotGlance_1.0.1_x64-setup.exe`（21.89 MiB），
+产物位置：`..\build\target\release\bundle\nsis\ShotGlance_1.0.1_x64-setup.exe`（21.88 MiB），
 并被归档到 `..\build\release\`。手工等价命令：
 
 ```
