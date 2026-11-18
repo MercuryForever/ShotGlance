@@ -87,7 +87,7 @@ tauri 会把 ACL / capability 的生成结果写到 `src-tauri/gen/`，路径由
 
 ## 换机器要带什么（结论：**不要打包 `build\`**）
 
-`build\` 是"可重建物的集合"，不是"要搬走的东西集合"。它现在 4.3 GB，其中 4.3 GB 是 `target\`，
+`build\` 是"可重建物的集合"，不是"要搬走的东西集合"。它现在 4.5 GB，其中 4.4 GB 是 `target\`，
 而 `target\` 里 `.deps` / `.fingerprint` 记的是**本机绝对路径**，换盘符、换用户名、换目录名一律失效，
 拷过去只能用 `-Clean` 删掉重编。真正要带走的是下面这几项：
 
@@ -98,12 +98,18 @@ tauri 会把 ACL / capability 的生成结果写到 `src-tauri/gen/`，路径由
 | ✅ | 三个大模型 | `D:\ShotGlance-20261116\models\*.onnx` | Opus-MT 113 MB 不在安装包内；`decoder.int8.onnx` 是手工产物，丢了静默慢 6 倍 |
 | ✅ | 依赖缓存 | `restore\cargo-registry.tar` + `restore\node_modules.tar` | 免联网 `npm ci` / 离线 cargo |
 | ⚠️ 可选 | 安装包 | `build\release\ShotGlance_1.0.1_x64-setup.exe`（21.88 MiB） | 只给别人装机用；有源码就能重建 |
-| ❌ | `build\target`（4.3 GB） | 构建区 | 路径绑死 + 全量重编 12 分钟，带走是纯负担 |
+| ❌ | `build\target`（4.4 GB） | 构建区 | 路径绑死 + 全量重编 12 分钟，带走是纯负担 |
 | ❌ | `build\dist` / `build\logs` | 构建区 | 秒级重建 |
 
 **换机器后的正确动作**：解出 Git 区 → 装 MSVC/WinSDK → 还原 toolchain 与依赖缓存 →
 在仓库根跑 `.\build.ps1`。`build\` 会在第一次构建时由脚本自动建出来（`dist`/`target`/`release`/`logs`），
 不需要你预先准备，也不需要从旧机器上搬。完整步骤见 [`shotglance/HANDOFF.md`](shotglance/HANDOFF.md)。
+
+> **遗留物提醒**：本机 `shotglance\src-tauri\target\` 还躺着 3.9 GB 旧产物——那是改造前
+> cargo 的默认落点，删除时被平台的批量删除保护挡下，没能清干净。它已被
+> `shotglance/.gitignore` 忽略，**不进仓库、不随快照走**，下次 C 盘重置自然消失；
+> 想现在清掉就在自己的终端里跑 `rmdir /s /q shotglance\src-tauri\target`。
+> 所以此刻 `C:\work\shotglance` 看着 8.4 GB，剔掉这两坨产物其实只有约 125 MB。
 
 ---
 
