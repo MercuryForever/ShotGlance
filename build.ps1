@@ -53,16 +53,17 @@ $logPath = Join-Path $logDir ('build-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + 
 try { Start-Transcript -Path $logPath -Force | Out-Null } catch { $logPath = $null }
 
 # ---- toolchain -------------------------------------------------------------
-# Node: prefer PATH, else pick the highest version under the managed root. The
-# folder name carries a build suffix (22.22.2-2, 22.22.2-6, ...) that changes
-# whenever the runtime is reinstalled, so never hardcode it.
-$managedNodeRoot = 'C:\Users\Administrator\.workbuddy\binaries\node\versions'
-if (-not (Get-Command node -ErrorAction SilentlyContinue) -and (Test-Path $managedNodeRoot)) {
-    $managedNode = Get-ChildItem $managedNodeRoot -Directory |
+# Node must be on PATH. Portable copies can be pointed at with NODE_HOME, whose
+# sub-folders are scanned and the highest version wins -- the folder name often
+# carries a build suffix (22.22.2-2, 22.22.2-6, ...), so never hardcode one.
+$nodeHome = $env:NODE_HOME
+if (-not (Get-Command node -ErrorAction SilentlyContinue) -and $nodeHome -and (Test-Path $nodeHome)) {
+    $nodeDir = Get-ChildItem $nodeHome -Directory -ErrorAction SilentlyContinue |
         Where-Object { Test-Path (Join-Path $_.FullName 'node.exe') } |
         Sort-Object { [version]($_.Name -replace '-.*$', '') } -Descending |
         Select-Object -First 1
-    if ($managedNode) { $env:PATH = "$($managedNode.FullName);$env:PATH" }
+    if ($nodeDir) { $env:PATH = "$($nodeDir.FullName);$env:PATH" }
+    elseif (Test-Path (Join-Path $nodeHome 'node.exe')) { $env:PATH = "$nodeHome;$env:PATH" }
 }
 # Always call npm.cmd, never bare 'npm': on machines where the Node folder is on
 # PATH, 'npm' resolves to npm.ps1 (a PowerShell script). A script call does NOT
@@ -74,7 +75,7 @@ if (-not $npmCmd) {
     $npmCmd = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue
 }
 if (-not $npmCmd) {
-    throw 'npm not found. Add Node 22 to PATH, or drop a portable Node under the managed node root.'
+    throw 'npm not found. Add Node.js to PATH, or set NODE_HOME to a portable Node install.'
 }
 $npm = $npmCmd.Source
 # Rust: a fresh rustup install is not on PATH until the terminal is reopened,
