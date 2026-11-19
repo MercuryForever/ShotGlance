@@ -335,6 +335,9 @@ fn enter_selection_mode(app: &AppHandle, monitor: usize) {
         eprintln!("[shotglance] 选区面拿不到显示器几何，窗口保持原尺寸");
     }
 
+    // 进来之前窗口是被 hide_panel 藏起来的（为了抓一帧"没有自己"的屏幕），
+    // 这里必须显形，否则用户面对的是一块什么都没有的屏幕。
+    let _ = win.show();
     let _ = win.set_focus();
 }
 
@@ -553,16 +556,59 @@ fn spawn_idle_watchdog(app: AppHandle) {
     });
 }
 
+/// 采集前把面板从屏幕上撤下来。
+///
+/// 抓屏抓的是"屏幕上有什么"，而面板本身就摆在屏幕上——不撤下来，拍出来的图里
+/// 就永远带着应用自己的窗口。全屏截图是整块带进去，框选则是底图里带着，
+/// 用户框到那块区域时截图里就出现一块"上一次的画面"，看起来像没擦干净的残影。
+fn hide_panel(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window(PANEL) {
+        let _ = win.hide();
+    }
+}
+
+fn show_panel(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window(PANEL) {
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
+/// 窗口隐藏后要等一小段再抓帧。
+///
+/// `hide()` 只是把"该隐藏"告诉系统，真正从画面上消失要等 DWM 下一次合成；
+/// 而抓帧可能拿到比合成更早的那一帧。不相隔一段时间，抓到的仍是"窗口还在"
+/// 的画面——这一步没法靠读代码推断，只能在真机上试出来。
+///
+/// 默认 120 ms（@60Hz 约 7 帧，覆盖 DWM 合成 + 帧投递的延迟）。
+/// 冷启动第一帧偏慢的机器可以用 SHOTGLANCE_HIDE_MS 调大。
+fn hide_settle_ms() -> u64 {
+    std::env::var("SHOTGLANCE_HIDE_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(120)
+}
+
 /// 采集指定显示器整屏，返回 PNG(base64) 与分段时间。
 ///
 /// 走 spawn_blocking：截屏是同步阻塞调用（等 DXGI 帧 20–60 ms），
 /// 直接放在 async 里会占住 tokio worker，热键连按时容易堆积。
 #[tauri::command]
-async fn capture_screen(monitor: Option<usize>) -> Result<capture::CaptureResult, String> {
+async fn capture_screen(
+    app: AppHandle,
+    monitor: Option<usize>,
+) -> Result<capture::CaptureResult, String> {
     touch();
-    tauri::async_runtime::spawn_blocking(move || capture::capture_monitor(monitor))
-        .await
-        .map_err(|e| format!("采集任务异常: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        // 抓完无论成败都要把面板还回去，否则采集失败时用户面对的是一个"消失了"的应用。
+        hide_panel(&app);
+        std::thread::sleep(std::time::Duration::from_millis(hide_settle_ms()));
+        let out = capture::capture_monitor(monitor);
+        show_panel(&app);
+        out
+    })
+    .await
+    .map_err(|e| format!("采集任务异常: {e}"))?
 }
 
 /// 枚举显示器（多屏选择用）。
@@ -591,11 +637,19 @@ struct OcrScreen {
 /// 走 spawn_blocking：整条链路是同步 CPU 密集（采集 + 推理），
 /// 放到 tokio worker 上会把别的 IPC 一起堵住。
 #[tauri::command]
-async fn ocr_screen(monitor: Option<usize>) -> Result<OcrScreen, String> {
+async fn ocr_screen(app: AppHandle, monitor: Option<usize>) -> Result<OcrScreen, String> {
     touch();
     tauri::async_runtime::spawn_blocking(move || {
         use std::time::Instant;
-        let (frame, capture_ms, idx) = capture::grab_frame(monitor)?;
+
+        // 与 capture_screen 同理：先撤面板再抓，抓完立刻还回去。
+        // 等待放在识别之前，用户感知到的额外延迟只有这一段。
+        hide_panel(&app);
+        std::thread::sleep(std::time::Duration::from_millis(hide_settle_ms()));
+        let grabbed = capture::grab_frame(monitor);
+        show_panel(&app);
+
+        let (frame, capture_ms, idx) = grabbed?;
         let (width, height) = (frame.width(), frame.height());
 
         let ocr = ocr::recognize(&frame)?;
@@ -655,16 +709,30 @@ struct RegionResult {
     ocr: Option<ocr::OcrResult>,
 }
 
-/// 进入区域框选：抓一帧 → 暂存 → 把面板拉成整屏选区面。
+/// 进入区域框选：藏起面板 → 等合成器撤下窗口 → 抓一帧 → 暂存 → 把面板拉成整屏选区面。
 ///
-/// 先抓屏再改窗口形态，顺序不能反：窗口一铺满，屏幕上出现的就是自己，
-/// 此时再抓屏只会抓到遮罩。
+/// 三个顺序都不能换：
+/// 1. 必须先藏面板。抓屏抓的是"屏幕上有什么"，面板就在屏幕上，直接抓会把它自己
+///    拍进底图，用户框到那块区域时截图里就带着应用自己的窗口。
+/// 2. 藏完必须等一小段（见 hide_settle_ms），否则 DWM 还没合成，抓到的仍是旧帧。
+/// 3. 抓帧必须在窗口变成全屏之前：窗口一铺满，屏幕上出现的就是遮罩本身。
 #[tauri::command]
 async fn region_begin(app: AppHandle, monitor: Option<usize>) -> Result<RegionBegin, String> {
     touch();
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let (frame, capture_ms, idx) = capture::grab_frame(monitor)?;
+        hide_panel(&handle);
+        std::thread::sleep(std::time::Duration::from_millis(hide_settle_ms()));
+
+        let grabbed = capture::grab_frame(monitor);
+        let (frame, capture_ms, idx) = match grabbed {
+            Ok(v) => v,
+            // 抓失败必须把窗口还回去，否则用户面对的是一个"消失了"的应用
+            Err(e) => {
+                show_panel(&handle);
+                return Err(e);
+            }
+        };
         let (width, height) = (frame.width(), frame.height());
 
         // 底图用 q85：与预览一致，用户看到的边界就是他框出来的边界。
