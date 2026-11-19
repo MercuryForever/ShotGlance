@@ -1,16 +1,15 @@
-# ShotGlance
+# ShotGlance 技术说明
 
 截图 → OCR → 翻译 → 悬浮回显。Rust + Tauri 2 技术栈。
 
-> 换机器 / 隔很久回来 → 先看 [`HANDOFF.md`](HANDOFF.md)（环境基线、快照范围、恢复步骤、踩坑清单）。
-> 本文只讲技术决策与实测数据。
+本文只讲技术决策与实测数据。上手使用与构建入口见仓库根 [`README.md`](../README.md)。
 
 ## 环境要求
 
 | 组件 | 版本 | 用途 |
 |---|---|---|
 | Rust | stable-x86_64-pc-windows-msvc (1.99+) | 核心逻辑 |
-| MSVC Build Tools | VS2022 VCTools + Win11 SDK | 链接器与系统库 |
+| MSVC Build Tools | VCTools + Windows SDK 10.0.26100+ | 链接器与系统库 |
 | Node.js | ≥ 20.19 | 前端构建与 Tauri CLI |
 | WebView2 Runtime | 系统自带 | Tauri 渲染引擎 |
 
@@ -34,7 +33,7 @@ npm run tauri:dev      # 热重载，改前端秒级生效
 .\build.ps1 -Clean             # 先清空 build\dist 与 build\target
 ```
 
-产物位置：`..\build\target\release\bundle\nsis\ShotGlance_1.0.1_x64-setup.exe`（21.88 MiB），
+产物位置：`..\build\target\release\bundle\nsis\ShotGlance_1.0.0_x64-setup.exe`（21.89 MiB），
 并被归档到 `..\build\release\`。手工等价命令：
 
 ```
@@ -425,11 +424,11 @@ scripts/
 - [x] 区域框选（复用面板窗口铺满屏 + 冻结帧裁剪，坐标按渲染矩形反算）
 - [x] PP-OCRv4 推理接入（测试图 8/8 行、全屏 83 行；242 ms / 811 ms）
 - [x] OCR 引擎按需加载 + 面板销毁即卸载（152.7 MB → 32.9 MB）
-- [x] 翻译层：5 引擎可切换 + auto 对冲竞速 + 离线 Opus-MT（详见 HANDOFF §1.2）
-- [x] 译文悬浮层（复用面板窗口变形为无边框置顶卡片，贴原文框下方，详见 HANDOFF §1.3）
+- [x] 翻译层：5 引擎可切换 + auto 对冲竞速 + 离线 Opus-MT
+- [x] 译文悬浮层（复用面板窗口变形为无边框置顶卡片，贴原文框下方）
 - [x] OCR 后自动翻译（框选松手即出译文；设置里可关，避免按量计费引擎产生意外费用）
 - [x] 离线解码提速（merged decoder + KV cache → 1.2–1.6×；词表投影 int8 化 → 单步 14.84 → 2.37 ms，
-      累计 **6.1–6.8×**，详见 HANDOFF §1.5）
+      累计 **6.1–6.8×**）
 
 ## 已知限制
 
@@ -446,7 +445,7 @@ scripts/
 ### 二、使用前提
 
 1. **首次使用需联网下载离线翻译模型（113 MB / 含加速版 146 MB）。**
-   模型不进安装包——放进去安装包会从 21.88 MiB 涨到约 135 MB，直接顶破 150 MB 红线。
+   模型不进安装包——放进去安装包会从 21.89 MiB 涨到约 135 MB，直接顶破 150 MB 红线。
    首次点「下载模型」时需联网：原版 `encoder.onnx` 52.9 MB + `decoder.onnx` 60.2 MB = **113 MB**；
    若跑过 `scripts/mt/transform_lmhead.py` 生成 `decoder.int8.onnx`（93.5 MB），总计 **146 MB**，
    多出的 32 MB 换 6 倍单步速度。也可以手动把模型放到

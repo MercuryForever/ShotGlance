@@ -3,10 +3,10 @@
 本项目的所有重要变更都记录在这里。版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)，
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [1.0.1] — 2026-11-18
+## [1.0.0] — 2026-11-19
 
-修复一个真机上必然踩到的问题：**应用可以被重复启动，多个实例同时驻留**。
-体积 22,950,001 → **22,947,101 B**（≈21.88 MiB）；Rust 单测 8 → **11 passed**。
+首个对外发布版（Windows x64）。截图 → OCR → 翻译 → 悬浮回显的完整链路闭合，
+七项硬指标全部达标。安装包 **21.89 MiB**；Rust 单测 **11 passed**、`tsc --noEmit` 0 错。
 
 > NSIS 输出不是确定性的（内嵌时间戳/压缩游程），同一份源码两次打包会差几 KB，
 > 所以体积数字只按量级看，别拿字节数当构建校验值。
@@ -35,6 +35,19 @@
   `SHOTGLANCE_AUTO_OVERLAY` 不参与单实例判定。不豁免的话，托盘实例开着时跑脚本会被判成
   第二实例、静默退出（退出码 0、无任何输出），排查成本极高。
 
+- **截图不再把应用自己的窗口拍进去**。抓屏抓的是"屏幕上有什么"，而面板就摆在屏幕上：
+  全屏截图会整块带上窗口，框选则把它留在底图里，用户框到那块区域时截图里就出现一块
+  "上一次的画面"。三条采集路径（`capture_screen` / `ocr_screen` / `region_begin`）统一改为
+  `hide_panel` → 等 `hide_settle_ms()`（默认 120 ms，`SHOTGLANCE_HIDE_MS` 可调）→ 抓帧
+  → `show_panel`。等待是必需的：`hide()` 只告诉系统该隐藏，真正从画面消失要等 DWM
+  下一次合成，抓帧可能拿到更早的那一帧。抓帧失败时同样把窗口还回去。
+
+- **框选结束不再留下一块深色残影**。原顺序是「先让后端缩窗、等 OCR 结果回来才撤
+  `body.selecting`」，于是整段裁剪 + 识别（100–700 ms）里窗口只有面板大小，里面却是
+  选区态的纯深色空块——既像窗口没消失，又像上一帧的残影。改为「撤选区态 → 等两帧
+  （`requestAnimationFrame` 是"这一帧已绘制完成"的确定性信号，不用固定 sleep）→ 才发命令」，
+  `cancelRegion` 同步重排。
+
 ### 依赖
 
 - 新增直接依赖 `windows-sys 0.59`（`Win32_Foundation` / `Win32_Security` / `Win32_System_Threading`）。
@@ -52,15 +65,10 @@
 
 ### 版本
 
-- 1.0.0 → **1.0.1**（`package.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json`），
-  安装包 `ShotGlance_1.0.1_x64-setup.exe`。
+- 版本号统一为 **1.0.0**（`package.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json`），
+  安装包 `ShotGlance_1.0.0_x64-setup.exe`。
 
-## [1.0.0] — 2026-11-18
-
-首个对外发布版。在 0.1.0 之上补齐三项体验改动，并把仓库拆成「Git 区 / 构建区」两个互不干扰的区域。
-体积 21.89 MiB；Rust 单测 8 passed、`tsc --noEmit` 0 错。
-
-### 仓库结构（本次新划分）
+### 仓库结构（Git 区 / 构建区）
 
 - **Git 区**（入库）：仓库根的 `.gitignore` / `.gitattributes` / `README.md` / `LICENSE`（MIT）/
   `CHANGELOG.md` / `build.ps1` / `verify-env.ps1`，以及工程目录 `shotglance/`
@@ -121,7 +129,7 @@
 | 6 | 离线翻译（≤30 输出 token） | < 500 ms | **25–80 ms** | ✅ 约 6 倍余量 |
 | 7 | 单文件免安装 | 要求 | NSIS `currentUser` + WebView2 `embedBootstrapper` | ✅ 无需管理员权限 |
 
-测量口径与复现命令见 `README.md` 与 `HANDOFF.md` §1；「空闲 < 80 MB」只靠窗口回收能达成，
+测量口径与复现命令见 [`README.md`](shotglance/README.md)；「空闲 < 80 MB」只靠窗口回收能达成，
 压模型或调线程池都做不到。
 
 ### 新增
@@ -202,6 +210,6 @@ Decoder 布局算子收敛、悬浮卡圆角）与「首次使用需联网下载
 
 ## 版本约定
 
-- `0.1.x`：只修 bug、补文档，不动架构
-- `0.2.0`：加入 README「已知限制」里任一条被撤销的技术债
+- `1.0.x`：只修 bug、补文档，不动架构
+- `1.1.0`：加入 README「已知限制」里任一条被撤销的技术债，或新增用户可见功能
 - 打包前必须复核 `README.md` 的发布检查清单与七项硬指标，指标退步不进版本号
