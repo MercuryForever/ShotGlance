@@ -873,17 +873,31 @@ async function finishRegion(crop: {
   w: number;
   h: number;
 }): Promise<void> {
-  // 遮罩先收，但 body 保持深色：后端一收到命令就把窗口还原成面板尺寸，
-  // 这时若面板内容已经显示，会被压扁几帧。等结果回来再切。
+  // 这个函数的顺序就是全部要点：
+  //   1. 立刻撤掉选区态（遮罩层 + body.selecting），面板内容回到 DOM
+  //   2. 等两帧，让面板在"当前的全屏尺寸"上完成布局与绘制
+  //   3. 这时才发 region_finish —— 后端收到命令的第一件事就是把窗口缩回面板大小
+  //
+  // 原先的顺序反了（先发命令缩窗，等结果回来才撤 body.selecting）：
+  // 窗口在整段"裁剪 + 识别"期间只有面板那么大，里面却还是选区态的纯深色空块，
+  // 屏幕上就留下一块静止的深色矩形——既像"窗口没消失"，又像"上一帧的残影"。
+  // 裁剪+识别实测 100~700 ms，这块东西挂多久完全取决于 OCR 有多慢。
   hideOverlay();
   resetDrag();
   selecting = false;
   regionBusy = true;
+  document.body.classList.remove("selecting");
+
   if (regionBtn) regionBtn.disabled = true;
   if (captureBtn) captureBtn.disabled = true;
 
   if (capMetaEl) capMetaEl.textContent = "裁剪并识别…";
   if (ocrMetaEl) ocrMetaEl.textContent = "识别中…";
+
+  // 两帧而不是固定等待：rAF 是"这一帧已经绘制完成"的确定性信号，
+  // 不会因为机器快慢而多等或少等（beginRegion 上遮罩时用的是同一套等待）。
+  await nextFrame();
+  await nextFrame();
 
   try {
     const r = await invoke<RegionResult>("region_finish", {
@@ -893,7 +907,6 @@ async function finishRegion(crop: {
       h: crop.h,
       runOcr: true,
     });
-    document.body.classList.remove("selecting");
     applyRegionResult(r);
 
     // 先放开按钮与 Esc：后面自动翻译要几百毫秒到一秒多，
@@ -927,14 +940,17 @@ async function cancelRegion(): Promise<void> {
   selecting = false;
   resetDrag();
   hideOverlay();
+  // 与 finishRegion 同理：先把面板态画出来，再让后端缩窗。
+  // region_cancel 是同步命令，窗口几乎立刻还原，所以这里的问题比提交时轻，
+  // 但顺序保持一致，免得两条退出路径行为不同。
+  document.body.classList.remove("selecting");
+  await nextFrame();
+  await nextFrame();
   try {
-    // 等后端把窗口还原成面板尺寸，再让面板内容显形。
-    // 顺序反过来会看到一帧被拉扁的面板。
     await invoke("region_cancel");
   } catch {
     /* 窗口可能已销毁 */
   }
-  document.body.classList.remove("selecting");
   if (capMetaEl) capMetaEl.textContent = "已取消选区";
 }
 
