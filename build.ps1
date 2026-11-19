@@ -53,9 +53,16 @@ $logPath = Join-Path $logDir ('build-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + 
 try { Start-Transcript -Path $logPath -Force | Out-Null } catch { $logPath = $null }
 
 # ---- toolchain -------------------------------------------------------------
-$managedNode = 'C:\Users\Administrator\.workbuddy\binaries\node\versions\22.22.2-2'
-if (-not (Get-Command node -ErrorAction SilentlyContinue) -and (Test-Path $managedNode)) {
-    $env:PATH = "$managedNode;$env:PATH"
+# Node: prefer PATH, else pick the highest version under the managed root. The
+# folder name carries a build suffix (22.22.2-2, 22.22.2-6, ...) that changes
+# whenever the runtime is reinstalled, so never hardcode it.
+$managedNodeRoot = 'C:\Users\Administrator\.workbuddy\binaries\node\versions'
+if (-not (Get-Command node -ErrorAction SilentlyContinue) -and (Test-Path $managedNodeRoot)) {
+    $managedNode = Get-ChildItem $managedNodeRoot -Directory |
+        Where-Object { Test-Path (Join-Path $_.FullName 'node.exe') } |
+        Sort-Object { [version]($_.Name -replace '-.*$', '') } -Descending |
+        Select-Object -First 1
+    if ($managedNode) { $env:PATH = "$($managedNode.FullName);$env:PATH" }
 }
 # Always call npm.cmd, never bare 'npm': on machines where the Node folder is on
 # PATH, 'npm' resolves to npm.ps1 (a PowerShell script). A script call does NOT
@@ -67,11 +74,19 @@ if (-not $npmCmd) {
     $npmCmd = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue
 }
 if (-not $npmCmd) {
-    throw 'npm not found. Add Node 22 to PATH, or edit $managedNode in this script.'
+    throw 'npm not found. Add Node 22 to PATH, or drop a portable Node under the managed node root.'
 }
 $npm = $npmCmd.Source
-if ($Target -ne 'Frontend' -and -not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-    throw 'cargo not found. Install the Rust MSVC toolchain, or add %USERPROFILE%\.cargo\bin to PATH.'
+# Rust: a fresh rustup install is not on PATH until the terminal is reopened,
+# so fall back to the default install location before giving up.
+if ($Target -ne 'Frontend') {
+    $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
+    if (-not (Get-Command cargo -ErrorAction SilentlyContinue) -and (Test-Path (Join-Path $cargoBin 'cargo.exe'))) {
+        $env:PATH = "$cargoBin;$env:PATH"
+    }
+    if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+        throw 'cargo not found. Install the Rust MSVC toolchain, or add %USERPROFILE%\.cargo\bin to PATH.'
+    }
 }
 
 $cfg = if ($DebugBuild) { 'debug' } else { 'release' }
