@@ -98,6 +98,12 @@ interface MtCfg {
   offline_max_tokens: number;
   /** 框选识别完成后自动翻译并悬浮显示。关掉就回到手动点「翻译」。 */
   auto_translate: boolean;
+  /** 全屏截图热键，字符串形如 "Ctrl+Shift+KeyA"，由后端 global-hotkey 解析。 */
+  hotkey_capture: string;
+  /** 框选截图热键。默认仍是 1.0.0 的 Ctrl+Shift+S。 */
+  hotkey_region: string;
+  /** 关闭窗口行为："tray" 驻留托盘 / "exit" 直接退出。 */
+  close_action: string;
 }
 
 interface Outcome {
@@ -137,7 +143,7 @@ const ocrMetaEl = $<HTMLElement>("#ocr-meta");
 const monitorSel = $<HTMLSelectElement>("#monitor");
 const captureBtn = $<HTMLButtonElement>("#capture");
 const ocrBtn = $<HTMLButtonElement>("#ocr");
-const ocrEl = $<HTMLElement>("#ocr-text");
+const ocrEl = $<HTMLTextAreaElement>("#ocr-text");
 const transEl = $<HTMLElement>("#trans-text");
 const runBtn = $<HTMLButtonElement>("#run");
 const regionBtn = $<HTMLButtonElement>("#region");
@@ -173,6 +179,11 @@ const cfgDlFill = $<HTMLElement>("#cfg-dl-fill");
 const cfgTestBtn = $<HTMLButtonElement>("#cfg-test");
 const cfgSaveBtn = $<HTMLButtonElement>("#cfg-save");
 const cfgOut = $<HTMLElement>("#cfg-out");
+const cfgHkCapture = $<HTMLInputElement>("#cfg-hk-capture");
+const cfgHkRegion = $<HTMLInputElement>("#cfg-hk-region");
+const cfgCloseTray = $<HTMLInputElement>("#cfg-close-tray");
+const cfgCloseExit = $<HTMLInputElement>("#cfg-close-exit");
+const hotkeyHintEl = $<HTMLElement>("#hotkey-hint");
 
 /* 悬浮卡片。它的 DOM 和面板共用同一个窗口，只是形态不同。 */
 const ovEl = $<HTMLElement>("#ov");
@@ -184,6 +195,17 @@ const ovCopyBtn = $<HTMLButtonElement>("#ov-copy");
 const cfgAutoTrans = $<HTMLInputElement>("#cfg-auto-trans");
 
 let lastText = "";
+
+/** 写原文框。OCR 结果落进来之后仍然可编辑，所以这里只是"填入初值"。 */
+function setSrcText(t: string): void {
+  if (ocrEl) ocrEl.value = t;
+}
+
+/** 读原文框。手动粘贴/输入的文本和 OCR 结果走同一条翻译入口。 */
+function srcText(): string {
+  const v = ocrEl?.value.trim() ?? "";
+  return v || lastText.trim();
+}
 
 /** 选区底图的像素尺寸（物理像素）。裁剪坐标最终要按它换算。 */
 let frameW = 0;
@@ -272,10 +294,6 @@ async function capture(): Promise<void> {
     if (boxesEl) boxesEl.innerHTML = "";
     capMetaEl.textContent = `${r.width}×${r.height} · 采集 ${r.capture_ms} · 编码 ${r.encode_ms} · 往返 ${roundTrip} ms`;
 
-    if (ocrEl) {
-      ocrEl.classList.add("placeholder");
-      ocrEl.textContent = "已截图，点击「识别」开始 OCR";
-    }
     if (ocrMetaEl) ocrMetaEl.textContent = "OCR 未运行";
 
     // 首次截图成功后才填充显示器列表。
@@ -309,16 +327,14 @@ async function runOcr(): Promise<void> {
     ocrMetaEl.textContent = `${r.ocr.lines.length} 行 · 检测 ${r.ocr.det_ms} · 识别 ${r.ocr.rec_ms} · 合计 ${r.ocr.total_ms} ms（往返 ${roundTrip}）`;
 
     lastText = r.ocr.text;
-    ocrEl.classList.toggle("placeholder", !lastText);
-    ocrEl.textContent = lastText || "未识别到文字（可换更大字号或调整区域）";
+    setSrcText(lastText);
 
     if (monitorSel && monitorSel.options.length === 0) {
       void loadMonitors(r.monitor);
     }
   } catch (err) {
     ocrMetaEl.textContent = "识别失败";
-    ocrEl.classList.remove("placeholder");
-    ocrEl.textContent = String(err);
+    setSrcText(String(err));
   } finally {
     if (captureBtn) captureBtn.disabled = false;
   }
@@ -376,6 +392,25 @@ function showEnginePane(engine: string): void {
   }
 }
 
+/** "Ctrl+Shift+KeyA" → "Ctrl+Shift+A"。只用于展示，回写给后端的仍是原串。 */
+function prettyHotkey(s: string): string {
+  return s
+    .split("+")
+    .map((t) => t.trim())
+    .map((t) =>
+      t.startsWith("Key") ? t.slice(3) : t.startsWith("Digit") ? t.slice(5) : t,
+    )
+    .join("+");
+}
+
+/** 把当前热键写进 header 提示——热键可配之后这行文案不能再写死。 */
+function renderHotkeyHint(cfg: MtCfg | null): void {
+  if (!hotkeyHintEl) return;
+  hotkeyHintEl.textContent = cfg
+    ? `${prettyHotkey(cfg.hotkey_capture)} 全屏 · ${prettyHotkey(cfg.hotkey_region)} 框选`
+    : "";
+}
+
 function applyCfg(cfg: MtCfg): void {
   mtCfg = cfg;
   fillEngineSelect(engineSel, cfg);
@@ -389,6 +424,17 @@ function applyCfg(cfg: MtCfg): void {
   if (cfgModel) cfgModel.value = cfg.openai_model;
   if (cfgMmEmail) cfgMmEmail.value = cfg.mymemory_email;
   if (cfgAutoTrans) cfgAutoTrans.checked = cfg.auto_translate;
+  if (cfgHkCapture) {
+    cfgHkCapture.value = prettyHotkey(cfg.hotkey_capture);
+    cfgHkCapture.dataset.raw = cfg.hotkey_capture;
+  }
+  if (cfgHkRegion) {
+    cfgHkRegion.value = prettyHotkey(cfg.hotkey_region);
+    cfgHkRegion.dataset.raw = cfg.hotkey_region;
+  }
+  if (cfgCloseTray) cfgCloseTray.checked = cfg.close_action !== "exit";
+  if (cfgCloseExit) cfgCloseExit.checked = cfg.close_action === "exit";
+  renderHotkeyHint(cfg);
   showEnginePane(cfg.engine);
 }
 
@@ -406,6 +452,9 @@ function readCfg(): MtCfg {
     openai_model: "gpt-4o-mini",
     offline_max_tokens: 96,
     auto_translate: true,
+    hotkey_capture: "Ctrl+Shift+KeyA",
+    hotkey_region: "Ctrl+Shift+KeyS",
+    close_action: "tray",
   };
   return {
     ...base,
@@ -419,6 +468,9 @@ function readCfg(): MtCfg {
     openai_model: cfgModel?.value.trim() ?? base.openai_model,
     mymemory_email: cfgMmEmail?.value.trim() ?? base.mymemory_email,
     auto_translate: cfgAutoTrans?.checked ?? base.auto_translate,
+    hotkey_capture: cfgHkCapture?.dataset.raw || base.hotkey_capture,
+    hotkey_region: cfgHkRegion?.dataset.raw || base.hotkey_region,
+    close_action: cfgCloseExit?.checked ? "exit" : "tray",
   };
 }
 
@@ -429,10 +481,18 @@ async function saveCfg(silent = false): Promise<void> {
     mtCfg = cfg;
     if (engineSel) engineSel.value = cfg.engine;
     engines = await invoke<EngineInfo[]>("translate_engines");
+    renderHotkeyHint(cfg);
     showEnginePane(cfg.engine);
     if (!silent && cfgOut) cfgOut.textContent = "已保存";
   } catch (err) {
     if (cfgOut) cfgOut.textContent = `保存失败：${String(err)}`;
+    // 后端拒绝时（典型是热键被别的程序占用）它已经把配置退回旧值，
+    // 界面必须跟着回退，否则用户看到的是"新热键 + 一条失败提示"，不知道哪个生效了。
+    try {
+      applyCfg(await invoke<MtCfg>("translate_cfg_get"));
+    } catch {
+      /* 读不到就保持现状，至少提示还在 */
+    }
   }
 }
 
@@ -533,9 +593,11 @@ function renderTransError(err: unknown): void {
 
 async function translate(): Promise<void> {
   if (!transEl || !transMetaEl) return;
-  if (!lastText.trim()) {
+  // 手动粘贴的文本和 OCR 结果没有区别，都从原文框取
+  const text = srcText();
+  if (!text) {
     transEl.classList.add("placeholder");
-    transEl.textContent = "暂无可翻译文本，请先识别";
+    transEl.textContent = "暂无可翻译文本：先识别，或直接在原文框里粘贴 / 输入";
     return;
   }
 
@@ -544,7 +606,7 @@ async function translate(): Promise<void> {
   if (runBtn) runBtn.disabled = true;
 
   try {
-    const r = await invoke<Outcome>("translate", { text: lastText });
+    const r = await invoke<Outcome>("translate", { text });
     renderOutcome(r);
   } catch (err) {
     renderTransError(err);
@@ -924,10 +986,7 @@ async function finishRegion(crop: {
       /* 后端可能已经还原过了 */
     }
     if (ocrMetaEl) ocrMetaEl.textContent = "选区识别失败";
-    if (ocrEl) {
-      ocrEl.classList.remove("placeholder");
-      ocrEl.textContent = String(err);
-    }
+    setSrcText(String(err));
   } finally {
     regionBusy = false;
     if (regionBtn) regionBtn.disabled = false;
@@ -964,21 +1023,15 @@ function applyRegionResult(r: RegionResult): void {
 
   const o = r.ocr;
   if (!o) {
-    if (ocrEl) {
-      ocrEl.classList.add("placeholder");
-      ocrEl.textContent = "已截取选区";
-    }
-    if (ocrMetaEl) ocrMetaEl.textContent = "OCR 未运行";
+    // 只截不识别：不动原文框，用户可能正打着自己要翻的字
+    if (ocrMetaEl) ocrMetaEl.textContent = "OCR 未运行（已截取选区）";
     return;
   }
 
   // 框坐标是相对裁剪图的，分母必须用裁剪后的尺寸
   renderBoxes(o.lines, r.width, r.height);
   lastText = o.text;
-  if (ocrEl) {
-    ocrEl.classList.toggle("placeholder", !lastText);
-    ocrEl.textContent = lastText || "未识别到文字（选区偏小或对比度不足）";
-  }
+  setSrcText(lastText);
   if (ocrMetaEl) {
     ocrMetaEl.textContent = `${o.lines.length} 行 · 检测 ${o.det_ms} · 识别 ${o.rec_ms} · 合计 ${o.total_ms} ms`;
   }
@@ -997,6 +1050,113 @@ ocrBtn?.addEventListener("click", () => {
 
 runBtn?.addEventListener("click", () => {
   void translate();
+});
+
+/* ---------------- 快捷键录制 ---------------- */
+
+/** 正在录制的输入框；null 表示当前没在录制。 */
+let recording: HTMLInputElement | null = null;
+let recordPrev = "";
+
+/** 修饰键本身不算一个可用的热键，按下去只是在等主键。 */
+const MODIFIER_KEYS = ["Control", "Shift", "Alt", "Meta"];
+
+/** 把按键拼成 global-hotkey 认识的串：修饰键在前，主键用 `code`。
+ *
+ * 用 `code` 而不是 `key`：`key` 会随输入法/键盘布局变化（中文输入法下
+ * 按下字母可能拿到别的字符），而 `code` 永远是物理键位。 */
+function comboFromEvent(e: KeyboardEvent): string | null {
+  if (MODIFIER_KEYS.includes(e.key)) return null;
+  const mods: string[] = [];
+  if (e.ctrlKey) mods.push("Ctrl");
+  if (e.shiftKey) mods.push("Shift");
+  if (e.altKey) mods.push("Alt");
+  if (e.metaKey) mods.push("Super");
+  // 必须带修饰键：裸字母当全局热键会把正常打字全吃掉
+  if (mods.length === 0) return null;
+  mods.push(e.code);
+  return mods.join("+");
+}
+
+function beginRecord(input: HTMLInputElement): void {
+  if (recording === input) return;
+  if (recording) endRecord(false);
+  recording = input;
+  recordPrev = input.value;
+  input.value = "按下组合键…";
+  input.classList.add("recording");
+  if (cfgOut) cfgOut.textContent = "";
+}
+
+/** apply=false 表示放弃录制，把原来的值写回去。 */
+function endRecord(apply: boolean): void {
+  if (!recording) return;
+  const input = recording;
+  recording = null;
+  input.classList.remove("recording");
+  if (!apply) input.value = recordPrev;
+}
+
+[cfgHkCapture, cfgHkRegion].forEach((el) => {
+  if (!el) return;
+  el.addEventListener("focus", () => beginRecord(el));
+  el.addEventListener("blur", () => endRecord(false));
+});
+
+// 捕获阶段拦按键：既要在输入框里拿到组合键，也要挡住录制过程中的 Esc，
+// 否则会顺手把整个设置面板关掉。
+window.addEventListener(
+  "keydown",
+  (e) => {
+    if (!recording) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (e.key === "Escape") {
+      endRecord(false);
+      return;
+    }
+
+    const combo = comboFromEvent(e);
+    if (!combo) {
+      if (cfgOut) cfgOut.textContent = "至少要配合一个修饰键（Ctrl / Shift / Alt）";
+      return;
+    }
+    // 原始串存 dataset，显示用美化格式：回写给后端的必须是能被解析的
+    // "Ctrl+Shift+KeyA"，而用户看到的应该是 "Ctrl+Shift+A"。
+    recording.dataset.raw = combo;
+    recording.value = prettyHotkey(combo);
+    recording.classList.remove("recording");
+    recording = null;
+    if (cfgOut) cfgOut.textContent = "点「保存」后生效";
+  },
+  true,
+);
+
+/* ---------------- 热键触发的动作 ---------------- */
+
+/** 取走后端记下的待处理动作并执行。
+ *
+ * 动作存在后端而不是随事件传过来：热键可能在建窗之前按下，
+ * 那一瞬间前端还没注册监听，事件会直接丢；记账就不会。 */
+async function runPendingAction(): Promise<void> {
+  let act = 0;
+  try {
+    act = await invoke<number>("take_pending_action");
+  } catch {
+    return;
+  }
+  if (act === 1) {
+    // 全屏：截图 + 识别；识别完是否顺手翻译，跟框选保持同一个开关
+    await runOcr();
+    if (mtCfg?.auto_translate ?? true) await translate();
+  } else if (act === 2) {
+    await beginRegion();
+  }
+}
+
+void listen("hotkey-poke", () => {
+  void runPendingAction();
 });
 
 /* ---------------- 翻译设置交互 ---------------- */
@@ -1118,6 +1278,8 @@ selector?.addEventListener("contextmenu", (e) => {
 // 应用本体留在托盘，下次热键再按需重建。
 window.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
+  // 正在录制热键：这一下 Esc 是"取消录制"，不能顺带把面板关掉
+  if (recording) return;
   // 悬浮形态下 Esc 只收卡片、不退面板：用户多半只是不想让它挡着，
   // 直接连面板一起销毁会把刚翻出来的译文一起丢掉。
   if (overlayOn) {
@@ -1168,9 +1330,18 @@ void (async () => {
   }
 })();
 
+// 热键可能在"窗口还没建好"的时候按下（后端先记账再建窗），
+// 所以初始化时主动取一次；有就立刻执行，没有就什么都不做。
+void runPendingAction();
+
 // 自动化钩子：窗口以 ?auto=ocr 打开时直接跑一次识别，便于截图取证。
 if (new URLSearchParams(location.search).get("auto") === "ocr") {
   setTimeout(() => void runOcr(), 400);
+}
+
+// 自动化钩子：?auto=cfg 时自动打开设置层，便于截图取证（无法模拟点击时的替代方案）。
+if (new URLSearchParams(location.search).get("auto") === "cfg") {
+  setTimeout(() => cfgOpenBtn?.click(), 500);
 }
 
 // 自动化钩子：?auto=overlay 时用一段样例译文摆出悬浮卡片，便于截图取证。

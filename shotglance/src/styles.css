@@ -317,9 +317,84 @@ body.selecting main {
   max-width: 150px;
 }
 
-.gear {
-  padding: 3px 7px;
-  line-height: 1;
+/* 设置入口。原来是译文区里的一个小齿轮（padding 3px 7px），
+   既小又只在「译文」分区出现——用户在截图区根本找不到设置。
+   现在提到 header，并给了明确的文字与完整点击区域。 */
+.bar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cfg-btn {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg);
+  border: 0.5px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.cfg-btn:hover,
+.cfg-btn:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: none;
+}
+
+/* 原文框。看起来与 .text 一致，但它可编辑：OCR 结果能改错字，
+   也能直接接收粘贴的文本。负 margin 让边框在视觉上贴合原来的文字块。 */
+.text-editor {
+  font: inherit;
+  line-height: 1.65;
+  color: var(--text);
+  background: transparent;
+  border: 0.5px solid transparent;
+  border-radius: 8px;
+  padding: 4px 6px;
+  margin: -4px -6px;
+  width: calc(100% + 12px);
+  /* 面板默认 460 px 高，原文框再高一点就会把「译文」整块挤出首屏。
+     3 行 + 可拖拽，够用且不抢版面。 */
+  min-height: 64px;
+  resize: vertical;
+}
+
+.text-editor::placeholder {
+  color: var(--muted);
+}
+
+.text-editor:hover {
+  border-color: var(--border);
+}
+
+.text-editor:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--bg);
+}
+
+/* 录制热键时给出明确的状态反馈：光标在这里不停闪但按什么都没反应最难受。 */
+.hk-input {
+  cursor: pointer;
+}
+
+.hk-input.recording {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* 设置面板里的分组小标题 */
+.cfg-section {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.6px;
+  margin-top: 2px;
+  padding-bottom: 4px;
+  border-bottom: 0.5px solid var(--border);
 }
 
 /* ---------------- 翻译设置 ---------------- */
@@ -395,6 +470,14 @@ body.selecting main {
 .field select:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* 单选/复选不能继承上面的 width:100%——一撑满就会把后面的文字挤到右边，
+   变成"圆点在左、文字在右、中间一片空白"。 */
+.field input[type="radio"],
+.field input[type="checkbox"] {
+  width: auto;
+  margin: 0;
 }
 
 .field-row {

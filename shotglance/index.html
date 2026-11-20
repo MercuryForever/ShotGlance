@@ -9,7 +9,10 @@
   <body>
     <header class="bar">
       <span class="brand">ShotGlance</span>
-      <span class="hint">Ctrl+Shift+S 打开 · Esc 关闭</span>
+      <div class="bar-right">
+        <span id="hotkey-hint" class="hint"></span>
+        <button id="cfg-open" class="cfg-btn" title="设置：快捷键 / 翻译引擎 / 关闭行为">设置</button>
+      </div>
     </header>
     <main>
       <section class="panel">
@@ -34,9 +37,20 @@
       <section class="panel">
         <div class="panel-head">
           <span class="label">原文</span>
-          <span id="ocr-meta" class="meta">OCR 未运行</span>
+          <div class="tools">
+            <span id="ocr-meta" class="meta">OCR 未运行</span>
+            <button id="run" class="ghost" title="翻译原文框里的文本">翻译</button>
+          </div>
         </div>
-        <p id="ocr-text" class="text placeholder">识别结果将显示在这里</p>
+        <!-- 可编辑：OCR 结果落进来之后用户还能改错字，
+             也可以直接把要翻的文本粘进来，跳过截图和识别。 -->
+        <textarea
+          id="ocr-text"
+          class="text-editor"
+          rows="3"
+          spellcheck="false"
+          placeholder="识别结果会出现在这里；也可以直接粘贴或输入文本，再点「翻译」"
+        ></textarea>
       </section>
       <section class="panel">
         <div class="panel-head">
@@ -44,8 +58,6 @@
           <div class="tools">
             <span id="trans-meta" class="meta"></span>
             <select id="engine" class="select compact" title="翻译引擎"></select>
-            <button id="run" class="ghost">翻译</button>
-            <button id="cfg-open" class="ghost gear" title="翻译设置">⚙</button>
           </div>
         </div>
         <p id="trans-text" class="text placeholder">译文将显示在这里</p>
@@ -82,11 +94,38 @@
     <div id="cfg" class="cfg" hidden>
       <div class="cfg-card">
         <div class="cfg-head">
-          <span>翻译设置</span>
+          <span>设置</span>
           <button id="cfg-close" class="ghost">关闭</button>
         </div>
 
         <div class="cfg-body">
+          <div class="cfg-section">快捷键</div>
+          <div class="field-row">
+            <div class="field">
+              <label for="cfg-hk-capture">全屏截图</label>
+              <input id="cfg-hk-capture" class="hk-input" readonly placeholder="点击后按键" />
+            </div>
+            <div class="field">
+              <label for="cfg-hk-region">框选截图</label>
+              <input id="cfg-hk-region" class="hk-input" readonly placeholder="点击后按键" />
+            </div>
+          </div>
+          <p class="hint-line">
+            点进输入框直接按组合键即可，Esc 取消。两个热键不能相同；被其它程序占用时会提示失败并保留原热键。
+          </p>
+
+          <div class="cfg-section">窗口</div>
+          <div class="field">
+            <label>关闭窗口时</label>
+            <label class="check"
+              ><input type="radio" name="close-action" id="cfg-close-tray" value="tray" /> 最小化到托盘，热键随时唤回</label
+            >
+            <label class="check"
+              ><input type="radio" name="close-action" id="cfg-close-exit" value="exit" /> 直接退出程序</label
+            >
+          </div>
+
+          <div class="cfg-section">翻译</div>
           <div class="field">
             <label for="cfg-engine">引擎</label>
             <select id="cfg-engine"></select>

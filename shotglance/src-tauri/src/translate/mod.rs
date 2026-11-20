@@ -96,6 +96,23 @@ pub struct Cfg {
     /// 关掉就回到"手动点翻译"的老流程——按量计费的引擎（DeepL / OpenAI）
     /// 会真的产生费用，所以必须让用户能关。
     pub auto_translate: bool,
+
+    /// 全屏截图热键。字符串形如 `"Ctrl+Shift+KeyA"`，交给 global-hotkey 解析。
+    ///
+    /// 放在这份配置里而不是另开一个 `app.json`：本应用只有这一份用户配置，
+    /// 多一个文件就多一处同步、迁移与"存了一半"的风险；而快捷键和翻译引擎
+    /// 一样都属于「设置」，归在一起反而更省心。
+    pub hotkey_capture: String,
+
+    /// 框选截图热键。默认仍是 1.0.0 的 `Ctrl+Shift+S`，
+    /// 老用户升级之后肌肉记忆不用改。
+    pub hotkey_region: String,
+
+    /// 关闭主窗口的行为：`"tray"` 驻留托盘（默认）/ `"exit"` 直接退出程序。
+    ///
+    /// 只影响窗口右上角的关闭按钮；Esc 关面板始终是"收回面板、留在托盘"，
+    /// 因为那是浏览行为，不是退出意图。
+    pub close_action: String,
 }
 
 impl Default for Cfg {
@@ -112,6 +129,9 @@ impl Default for Cfg {
             openai_model: "gpt-4o-mini".into(),
             offline_max_tokens: 96,
             auto_translate: true,
+            hotkey_capture: "Ctrl+Shift+KeyA".into(),
+            hotkey_region: "Ctrl+Shift+KeyS".into(),
+            close_action: "tray".into(),
         }
     }
 }

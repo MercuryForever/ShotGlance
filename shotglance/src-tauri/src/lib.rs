@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -8,7 +8,7 @@ use tauri::{
     AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 use serde::Serialize;
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 mod capture;
 mod ocr;
@@ -172,9 +172,104 @@ fn idle_limit_secs() -> u64 {
     }
 }
 
-/// 全局热键：Ctrl+Shift+S。
-fn hotkey() -> Shortcut {
-    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyS)
+/// 全局热键：全屏截图 + 框选截图，两个都可在设置里改。
+///
+/// 回调只拿得到 `Shortcut`，得靠它反查"这是哪个动作"，
+/// 所以当前生效的一对必须有一份可读缓存（改热键时同步写）。
+static HK_CAPTURE: Mutex<Option<Shortcut>> = Mutex::new(None);
+static HK_REGION: Mutex<Option<Shortcut>> = Mutex::new(None);
+
+/// 热键触发的待处理动作。
+///
+/// 为什么不用"事件带载荷"：热键可能在建窗之前按下，那时前端还没跑起来，
+/// 事件会直接丢掉。改成记账 + 通知：前端初始化时先 `take_pending_action`
+/// 取一次，运行中收到 `hotkey-poke` 再来取一次，两条路都不会漏。
+const ACT_NONE: u8 = 0;
+const ACT_CAPTURE: u8 = 1;
+const ACT_REGION: u8 = 2;
+static PENDING_ACTION: AtomicU8 = AtomicU8::new(ACT_NONE);
+
+/// 关闭主窗口时是否直接退出程序（由配置 `close_action` 决定）。
+static CLOSE_EXIT: AtomicBool = AtomicBool::new(false);
+
+/// 热键字符串 → `Shortcut`。
+///
+/// 格式沿用 global-hotkey 自己的约定（`Ctrl+Shift+KeyS`），前端录制时按同样的
+/// 规则拼装，两边就不用各维护一套"修饰键名到 Code"的映射表，也不会对不上。
+fn parse_shortcut(s: &str) -> Result<Shortcut, String> {
+    let t = s.trim();
+    if t.is_empty() {
+        return Err("热键不能为空".into());
+    }
+    t.parse::<Shortcut>()
+        .map_err(|e| format!("无法识别热键「{t}」：{e}"))
+}
+
+fn set_hk(slot: &'static Mutex<Option<Shortcut>>, v: Option<Shortcut>) {
+    *slot.lock().unwrap_or_else(|p| p.into_inner()) = v;
+}
+
+fn get_hk(slot: &'static Mutex<Option<Shortcut>>) -> Option<Shortcut> {
+    *slot.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// 按配置（重新）注册两个热键。
+///
+/// 失败时把**旧的一对**注册回去。改热键最常见的翻车方式是填了个被别的程序
+/// 占用的组合；这时候若直接放弃，热键就彻底没了，而用户只看到"保存失败"，
+/// 不会想到自己已经把热键弄丢。
+fn apply_hotkeys(app: &AppHandle, cfg: &mt::Cfg) -> Result<(), String> {
+    let cap = parse_shortcut(&cfg.hotkey_capture)?;
+    let reg = parse_shortcut(&cfg.hotkey_region)?;
+    if cap == reg {
+        return Err("全屏截图和框选截图不能用同一个热键".into());
+    }
+
+    let old_cap = get_hk(&HK_CAPTURE);
+    let old_reg = get_hk(&HK_REGION);
+
+    let gs = app.global_shortcut();
+    let _ = gs.unregister_all();
+
+    // 先写缓存再注册：注册成功那一刻热键就可能被按下，
+    // 回调里必须能立刻查到它对应哪个动作。
+    set_hk(&HK_CAPTURE, Some(cap));
+    set_hk(&HK_REGION, Some(reg));
+
+    let mut fail: Option<String> = None;
+    if let Err(e) = gs.register(cap) {
+        fail = Some(format!("全屏截图热键「{}」注册失败：{e}", cfg.hotkey_capture));
+    } else if let Err(e) = gs.register(reg) {
+        fail = Some(format!("框选截图热键「{}」注册失败：{e}", cfg.hotkey_region));
+    }
+
+    if let Some(msg) = fail {
+        // 缓存与真实注册状态都要回到旧值，否则会出现"界面显示旧热键、实际一个都没注册"
+        let _ = gs.unregister_all();
+        set_hk(&HK_CAPTURE, old_cap);
+        set_hk(&HK_REGION, old_reg);
+        if let Some(c) = old_cap {
+            let _ = gs.register(c);
+        }
+        if let Some(r) = old_reg {
+            let _ = gs.register(r);
+        }
+        return Err(msg);
+    }
+    Ok(())
+}
+
+/// 热键按下：记账 → 打开面板 → 叫前端来取。
+fn trigger_hotkey(app: &AppHandle, act: u8) {
+    PENDING_ACTION.store(act, Ordering::Relaxed);
+    let _ = open_panel(app);
+    let _ = app.emit("hotkey-poke", ());
+}
+
+/// 前端取走待处理动作（取完即清零，避免同一次按键执行两遍）。
+#[tauri::command]
+fn take_pending_action() -> u8 {
+    PENDING_ACTION.swap(ACT_NONE, Ordering::Relaxed)
 }
 
 /// 创建面板窗口；已存在则前置复用。
@@ -203,6 +298,8 @@ fn open_panel(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         WebviewUrl::App("index.html?auto=overlay".into())
     } else if std::env::var_os("SHOTGLANCE_AUTO_OCR").is_some() {
         WebviewUrl::App("index.html?auto=ocr".into())
+    } else if std::env::var_os("SHOTGLANCE_AUTO_CFG").is_some() {
+        WebviewUrl::App("index.html?auto=cfg".into())
     } else {
         WebviewUrl::App("index.html".into())
     };
@@ -947,7 +1044,25 @@ fn translate_cfg_get(app: AppHandle) -> mt::Cfg {
 
 #[tauri::command]
 fn translate_cfg_set(app: AppHandle, cfg: mt::Cfg) -> Result<(), String> {
-    mt::save_cfg(&app, &cfg)
+    let old = mt::load_cfg(&app);
+    mt::save_cfg(&app, &cfg)?;
+
+    // 热键是"存了就得立刻生效"的配置：用户改完不会想到还要重启。
+    // 注册失败时把配置也退回旧值——否则会出现"文件里写着新热键、
+    // 实际生效的是旧的"，下次启动还会再撞一次同样的失败。
+    let hotkey_changed =
+        old.hotkey_capture != cfg.hotkey_capture || old.hotkey_region != cfg.hotkey_region;
+    if hotkey_changed {
+        if let Err(e) = apply_hotkeys(&app, &cfg) {
+            let _ = mt::save_cfg(&app, &old);
+            return Err(e);
+        }
+        // 改成功要把新的快捷键名字告诉前端，header 的提示文案要跟着变
+        let _ = app.emit("hotkeys-changed", ());
+    }
+
+    CLOSE_EXIT.store(cfg.close_action == "exit", Ordering::Relaxed);
+    Ok(())
 }
 
 /// 用指定引擎试译一句固定文本，让用户在设置里当场验证密钥/网络是否可用。
@@ -1328,9 +1443,17 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
-                    if shortcut == &hotkey() && event.state() == ShortcutState::Pressed {
-                        let _ = open_panel(app);
+                    if event.state() != ShortcutState::Pressed {
+                        return;
                     }
+                    let act = if get_hk(&HK_CAPTURE).as_ref() == Some(shortcut) {
+                        ACT_CAPTURE
+                    } else if get_hk(&HK_REGION).as_ref() == Some(shortcut) {
+                        ACT_REGION
+                    } else {
+                        return;
+                    };
+                    trigger_hotkey(app, act);
                 })
                 .build(),
         )
@@ -1370,7 +1493,10 @@ pub fn run() {
 
             // 热键注册失败不应导致启动失败：Linux/Wayland 下 GlobalShortcuts
             // portal 多数 compositor 未实现，此时降级为托盘菜单触发。
-            if let Err(e) = app.global_shortcut().register(hotkey()) {
+            // 两个热键的注册/回滚都在 apply_hotkeys 里，失败时它保证旧的一对还在。
+            let boot_cfg = mt::load_cfg(app.handle());
+            CLOSE_EXIT.store(boot_cfg.close_action == "exit", Ordering::Relaxed);
+            if let Err(e) = apply_hotkeys(app.handle(), &boot_cfg) {
                 eprintln!("[shotglance] 全局热键注册失败，改用托盘触发: {e}");
             }
 
@@ -1453,6 +1579,15 @@ pub fn run() {
             if window.label() != PANEL {
                 return;
             }
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                // 用户点窗口的 X。按配置决定"驻留托盘"还是"直接退出"。
+                // 不写这个分支时走 Tauri 默认的销毁窗口，再由下面的
+                // ExitRequested(code=None) 拦住退出请求 —— 那就是"驻留托盘"。
+                if CLOSE_EXIT.load(Ordering::Relaxed) {
+                    window.app_handle().exit(0);
+                }
+                return;
+            }
             if let tauri::WindowEvent::Focused(true) = event {
                 touch();
             }
@@ -1476,7 +1611,8 @@ pub fn run() {
             mt_status,
             mt_download,
             mt_open_dir,
-            close_panel
+            close_panel,
+            take_pending_action
         ]);
 
     let app = builder
