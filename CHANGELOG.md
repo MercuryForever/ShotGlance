@@ -3,7 +3,14 @@
 本项目的所有重要变更都记录在这里。版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)，
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [1.0.0] — 2026-11-19
+## [Unreleased]
+
+### 文档
+
+- 「版本约定」补齐 **MAJOR** 规则，并给出判据：看外部行为变没变，不看代码改了多少
+- 格式对齐 Keep a Changelog：补 `[Unreleased]` 段、版本标题的日期改用 ASCII 连字符、补底部链接定义
+
+## [1.0.0] - 2026-11-19
 
 首个对外发布版（Windows x64）。截图 → OCR → 翻译 → 悬浮回显的完整链路闭合，
 七项硬指标全部达标。安装包 **21.89 MiB**；Rust 单测 **11 passed**、`tsc --noEmit` 0 错。
@@ -112,7 +119,7 @@
   `SHOTGLANCE_NO_PANEL=1`（回到纯托盘态，量内存基线用）与
   `SHOTGLANCE_RECLAIM_STARTUP=1`（让启动窗也参与回收，`measure-memory.ps1` 阶段 C 用）。
 
-## [0.1.0] — 2026-11-16
+## [0.1.0] - 2026-11-16
 
 **首个可交付版本（Windows x64）。** 截图 → OCR → 翻译 → 悬浮回显的完整链路已经闭合，
 七项硬指标全部达标，可以分发。对应提交 `07f39d2`。
@@ -210,6 +217,17 @@ Decoder 布局算子收敛、悬浮卡圆角）与「首次使用需联网下载
 
 ## 版本约定
 
-- `1.0.x`：只修 bug、补文档，不动架构
-- `1.1.0`：加入 README「已知限制」里任一条被撤销的技术债，或新增用户可见功能
-- 打包前必须复核 `README.md` 的发布检查清单与七项硬指标，指标退步不进版本号
+- **`1.0.x`（PATCH）**：只修 bug、补文档、内部重构；不改任何用户可见行为
+- **`1.1.0`（MINOR）**：新增用户可见功能，或撤销 README「已知限制」里任一条技术债；
+  旧用法全部继续有效
+- **`2.0.0`（MAJOR）**：破坏用户已有的行为或配置 —— 托盘 / 热键等交互语义改变、
+  删除或重命名环境变量与配置字段、安装标识或升级路径不兼容
+- **判据是「用户升级后会不会觉得东西跟以前不一样」，不是「代码改了多少」**。
+  内部重构再大，只要外部行为不变就进 PATCH 或 MINOR；反过来，删掉一个环境变量
+  哪怕只改三行，也应当进 MAJOR
+- 打包前必须复核 `README.md` 的发布检查清单与七项硬指标；指标退步**不阻止发版**，
+  但必须在 CHANGELOG 里写明退步项与原因，不能当作没发生
+
+[Unreleased]: https://github.com/MercuryForever/ShotGlance/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/MercuryForever/ShotGlance/releases/tag/v1.0.0
+[0.1.0]: https://github.com/MercuryForever/ShotGlance/releases/tag/v0.1.0
