@@ -5,6 +5,13 @@
 
 ## [Unreleased]
 
+（暂无待发布变更）
+
+## [1.1.0] - 2026-11-20
+
+**升级须知**：`Ctrl+Shift+S` 从"打开面板"变成"直接进入框选"。想单纯打开面板请点托盘图标，
+或按热键后按 Esc（面板会留在屏幕上）。配置文件向后兼容，不需要手工修改。
+
 ### 新增
 
 - **两个可配置的截图热键**：全屏截图（默认 `Ctrl+Shift+A`，截屏 + 识别 + 按开关自动翻译）
@@ -25,9 +32,16 @@
   再点「框选」；现在按下去就铺满屏幕等框选。想单纯打开面板请点托盘图标。
 - header 右侧的快捷键提示文案改为按当前配置渲染，不再写死。
 
+### 版本
+
+- 五处版本号统一为 **1.1.0**（`package.json` / `package-lock.json` 两处 /
+  `Cargo.toml` / `Cargo.lock` / `tauri.conf.json`），安装包
+  `ShotGlance_1.1.0_x64-setup.exe`（**21.92 MiB**）
+
 ### 文档
 
-- 「版本约定」补齐 **MAJOR** 规则，并给出判据：看外部行为变没变，不看代码改了多少
+- 「版本约定」补齐 **MAJOR** 规则，判据收紧为「升级后要不要额外做什么」
+  （必须改配置 / 必须换流程 / 装不上 三者之一），而不是「感觉变没变」
 - 格式对齐 Keep a Changelog：补 `[Unreleased]` 段、版本标题的日期改用 ASCII 连字符、补底部链接定义
 - `0.1.0` 段引用的提交 hash 改为作者信息重写后实际可点的 `16d8b8f`（旧 hash 已不在历史链上）
 
@@ -241,14 +255,16 @@ Decoder 布局算子收敛、悬浮卡圆角）与「首次使用需联网下载
 - **`1.0.x`（PATCH）**：只修 bug、补文档、内部重构；不改任何用户可见行为
 - **`1.1.0`（MINOR）**：新增用户可见功能，或撤销 README「已知限制」里任一条技术债；
   旧用法全部继续有效
-- **`2.0.0`（MAJOR）**：破坏用户已有的行为或配置 —— 托盘 / 热键等交互语义改变、
-  删除或重命名环境变量与配置字段、安装标识或升级路径不兼容
-- **判据是「用户升级后会不会觉得东西跟以前不一样」，不是「代码改了多少」**。
-  内部重构再大，只要外部行为不变就进 PATCH 或 MINOR；反过来，删掉一个环境变量
-  哪怕只改三行，也应当进 MAJOR
+- **`2.0.0`（MAJOR）**：破坏用户已有的行为或配置 —— 具体指以下三种之一：
+  旧配置读不出来（字段语义变更需手工迁移）、旧操作**完全失效且无等价替代**、
+  安装标识或升级路径不兼容
+- **判据是「用户升级后要不要额外做什么」，不是「感觉变没变」**：新增按钮、多一个设置项、
+  把某个入口挪了位置，都属于 PATCH 或 MINOR；只有"必须改配置 / 必须换流程 / 装不上"
+  才进 MAJOR。内部重构再大，只要外部行为不变就进 PATCH 或 MINOR
 - 打包前必须复核 `README.md` 的发布检查清单与七项硬指标；指标退步**不阻止发版**，
   但必须在 CHANGELOG 里写明退步项与原因，不能当作没发生
 
-[Unreleased]: https://github.com/MercuryForever/ShotGlance/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/MercuryForever/ShotGlance/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/MercuryForever/ShotGlance/releases/tag/v1.1.0
 [1.0.0]: https://github.com/MercuryForever/ShotGlance/releases/tag/v1.0.0
 [0.1.0]: https://github.com/MercuryForever/ShotGlance/releases/tag/v0.1.0

@@ -2,7 +2,7 @@
 
 [![Version](https://img.shields.io/github/v/release/MercuryForever/ShotGlance?label=version&color=2f81f7)](https://github.com/MercuryForever/ShotGlance/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20x64-4c9f38)](https://github.com/MercuryForever/ShotGlance/releases)
-[![Installer](https://img.shields.io/badge/installer-21.89%20MiB-4c9f38)](https://github.com/MercuryForever/ShotGlance/releases/latest)
+[![Installer](https://img.shields.io/badge/installer-21.92%20MiB-4c9f38)](https://github.com/MercuryForever/ShotGlance/releases/latest)
 [![License](https://img.shields.io/github/license/MercuryForever/ShotGlance?color=2f81f7)](LICENSE)
 
 截图 → OCR → 翻译 → 悬浮回显的 Windows 桌面小工具。
